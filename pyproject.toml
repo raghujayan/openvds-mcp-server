@@ -1,0 +1,12 @@
+[project]
+name = "repl-nix-workspace"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.13.0",
+    "anthropic>=0.69.0",
+    "mcp>=1.17.0",
+    "openvds>=3.4.8",
+    "pydantic>=2.12.0",
+]

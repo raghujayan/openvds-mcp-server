@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "openvds": {
+      "command": "python",
+      "args": ["src/openvds_mcp_server.py"],
+      "env": {
+        "VDS_DATA_PATH": "/path/to/vds/files:/another/path/to/vds",
+        "LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}
