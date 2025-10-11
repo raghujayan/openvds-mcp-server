@@ -27,7 +27,10 @@ from mcp.types import (
 from pydantic import BaseModel, Field, AnyUrl
 import json
 
-from vds_client import VDSClient
+try:
+    from .vds_client import VDSClient
+except ImportError:
+    from vds_client import VDSClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openvds-mcp-server")
