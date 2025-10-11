@@ -17,9 +17,12 @@ An MCP (Model Context Protocol) server for Bluware OpenVDS that enables AI-assis
   - Actual metadata extraction using OpenVDS layout descriptors
   - Real data extraction using requestVolumeSubset() with NumPy
   - Real amplitude statistics from actual seismic data
+  - Correct buffer dimension ordering (reversed for NumPy)
+  - Proper inclusive range handling with terminal plane preservation
 - Demo mode only as fallback when no VDS files available
 - Added comprehensive documentation and example usage
 - Set up Python project structure
+- All OpenVDS API usage verified correct by code review
 
 ## Project Architecture
 
