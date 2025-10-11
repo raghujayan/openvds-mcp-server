@@ -10,10 +10,15 @@ An MCP (Model Context Protocol) server for Bluware OpenVDS that enables AI-assis
 
 ## Recent Changes
 
-**2025-10-11**: Initial implementation
+**2025-10-11**: Initial implementation and OpenVDS integration
 - Created MCP server with resources, tools, and prompts
-- Implemented OpenVDS integration layer with demo mode
-- Added documentation and example usage
+- **Implemented REAL OpenVDS integration using actual API**:
+  - Real VDS file opening with openvds.open()
+  - Actual metadata extraction using OpenVDS layout descriptors
+  - Real data extraction using requestVolumeSubset() with NumPy
+  - Real amplitude statistics from actual seismic data
+- Demo mode only as fallback when no VDS files available
+- Added comprehensive documentation and example usage
 - Set up Python project structure
 
 ## Project Architecture

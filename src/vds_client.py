@@ -295,20 +295,20 @@ class VDSClient:
             manager = openvds.getAccessManager(vds_handle)
             layout = manager.volumeDataLayout
             
-            # Convert inline number to index
+            # Convert inline number to index with proper rounding
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
-            inline_index = inline_axis.coordinateToSampleIndex(float(inline_number))
+            inline_index = int(inline_axis.coordinateToSampleIndex(float(inline_number)))
             
-            # Define sample range
+            # Define sample range with proper index conversion
             if sample_range:
                 sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-                sample_start_idx = sample_axis.coordinateToSampleIndex(float(sample_range[0]))
-                sample_end_idx = sample_axis.coordinateToSampleIndex(float(sample_range[1]))
+                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1])))
             else:
                 sample_start_idx = 0
                 sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
             
-            # Define voxel range for inline slice
+            # Define voxel range for inline slice (voxelMax is exclusive)
             voxel_min = (sample_start_idx, 0, inline_index)
             voxel_max = (
                 sample_end_idx,
@@ -316,7 +316,8 @@ class VDSClient:
                 inline_index + 1
             )
             
-            # Pre-allocate buffer
+            # Pre-allocate buffer with REVERSED dimensions for NumPy
+            # voxel order is (sample, crossline, inline) but NumPy needs (crossline, sample)
             num_crosslines = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
             num_samples = sample_end_idx - sample_start_idx
             buffer = np.empty((num_crosslines, num_samples), dtype=np.float32)
@@ -407,20 +408,20 @@ class VDSClient:
             manager = openvds.getAccessManager(vds_handle)
             layout = manager.volumeDataLayout
             
-            # Convert crossline number to index
+            # Convert crossline number to index with proper rounding
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
-            crossline_index = crossline_axis.coordinateToSampleIndex(float(crossline_number))
+            crossline_index = int(crossline_axis.coordinateToSampleIndex(float(crossline_number)))
             
-            # Define sample range
+            # Define sample range with proper index conversion
             if sample_range:
                 sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-                sample_start_idx = sample_axis.coordinateToSampleIndex(float(sample_range[0]))
-                sample_end_idx = sample_axis.coordinateToSampleIndex(float(sample_range[1]))
+                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1])))
             else:
                 sample_start_idx = 0
                 sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
             
-            # Define voxel range for crossline slice
+            # Define voxel range for crossline slice (voxelMax is exclusive)
             voxel_min = (sample_start_idx, crossline_index, 0)
             voxel_max = (
                 sample_end_idx,
@@ -428,7 +429,8 @@ class VDSClient:
                 layout.getDimensionNumSamples(self.INLINE_DIM)
             )
             
-            # Pre-allocate buffer
+            # Pre-allocate buffer with REVERSED dimensions for NumPy
+            # voxel order is (sample, crossline, inline) but NumPy needs (inline, sample)
             num_inlines = layout.getDimensionNumSamples(self.INLINE_DIM)
             num_samples = sample_end_idx - sample_start_idx
             buffer = np.empty((num_inlines, num_samples), dtype=np.float32)
@@ -521,24 +523,24 @@ class VDSClient:
             manager = openvds.getAccessManager(vds_handle)
             layout = manager.volumeDataLayout
             
-            # Convert ranges to indices
+            # Convert ranges to indices with proper rounding
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
             sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
             
-            inline_start_idx = inline_axis.coordinateToSampleIndex(float(inline_range[0]))
-            inline_end_idx = inline_axis.coordinateToSampleIndex(float(inline_range[1]))
-            crossline_start_idx = crossline_axis.coordinateToSampleIndex(float(crossline_range[0]))
-            crossline_end_idx = crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))
+            inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
+            inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1])))
+            crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
+            crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1])))
             
             if sample_range:
-                sample_start_idx = sample_axis.coordinateToSampleIndex(float(sample_range[0]))
-                sample_end_idx = sample_axis.coordinateToSampleIndex(float(sample_range[1]))
+                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1])))
             else:
                 sample_start_idx = 0
                 sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
             
-            # Define voxel range
+            # Define voxel range (voxelMax is exclusive)
             voxel_min = (sample_start_idx, crossline_start_idx, inline_start_idx)
             voxel_max = (sample_end_idx, crossline_end_idx, inline_end_idx)
             
@@ -547,7 +549,8 @@ class VDSClient:
             num_crosslines = crossline_end_idx - crossline_start_idx
             num_inlines = inline_end_idx - inline_start_idx
             
-            # Pre-allocate buffer
+            # Pre-allocate buffer with REVERSED dimensions for NumPy
+            # voxel order is (sample, crossline, inline) but NumPy needs (inline, crossline, sample)
             buffer = np.empty((num_inlines, num_crosslines, num_samples), dtype=np.float32)
             
             # Request data extraction

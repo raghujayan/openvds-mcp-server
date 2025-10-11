@@ -13,16 +13,24 @@ This MCP server bridges large-scale volumetric datasets (seismic surveys, geophy
 
 ## Features
 
+### Real OpenVDS Integration ✅
+**All data access uses the actual OpenVDS Python API:**
+- Real VDS file opening with `openvds.open()`
+- Actual metadata extraction using OpenVDS layout descriptors
+- Real data extraction using `requestVolumeSubset()` with NumPy arrays
+- Calculates statistics from actual seismic amplitude data
+- Demo mode only as fallback when no VDS files are available
+
 ### MCP Resources
-- Survey metadata catalogs
+- Survey metadata catalogs (extracted from real VDS files)
 - Server capabilities information
 - Data structure documentation
 
 ### MCP Tools
-- `extract_inline`: Extract inline slices from seismic surveys
-- `extract_crossline`: Extract crossline slices
-- `extract_volume_subset`: Extract volumetric subsets
-- `get_survey_info`: Get detailed survey metadata and statistics
+- `extract_inline`: Extract inline slices from seismic surveys using OpenVDS
+- `extract_crossline`: Extract crossline slices using OpenVDS
+- `extract_volume_subset`: Extract volumetric subsets using OpenVDS
+- `get_survey_info`: Get detailed survey metadata from VDS files
 - `list_available_surveys`: List all available surveys with filtering
 
 ### MCP Prompts
@@ -67,15 +75,23 @@ python src/openvds_mcp_server.py
 
 ## Usage
 
-### Demo Mode
-The server runs in demo mode when no VDS files are found, providing example data for testing.
+### Demo Mode (Fallback Only)
+The server runs in demo mode **only when no VDS files are found**. Demo mode returns simulated responses for testing the MCP protocol without real data.
 
-### With Real VDS Files
-Set the `VDS_DATA_PATH` environment variable to point to your VDS data directories:
+### With Real VDS Files (Production Use)
+**To use real OpenVDS data extraction**, set the `VDS_DATA_PATH` environment variable to point to your VDS data directories:
 ```bash
 export VDS_DATA_PATH="/data/seismic:/data/surveys"
 python src/openvds_mcp_server.py
 ```
+
+The server will:
+1. Scan all `.vds` files in the specified paths
+2. Extract real metadata using OpenVDS layout API
+3. Provide actual data extraction with real amplitude statistics
+4. Calculate quality metrics from real seismic data
+
+**Note**: Without real VDS files, you can test the MCP protocol but won't get actual seismic data.
 
 ### Example Queries
 
