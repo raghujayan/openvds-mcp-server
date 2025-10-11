@@ -300,10 +300,11 @@ class VDSClient:
             inline_index = int(inline_axis.coordinateToSampleIndex(float(inline_number)))
             
             # Define sample range with proper index conversion
+            # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
             if sample_range:
                 sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
                 sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
             else:
                 sample_start_idx = 0
                 sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
@@ -413,10 +414,11 @@ class VDSClient:
             crossline_index = int(crossline_axis.coordinateToSampleIndex(float(crossline_number)))
             
             # Define sample range with proper index conversion
+            # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
             if sample_range:
                 sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
                 sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
             else:
                 sample_start_idx = 0
                 sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
@@ -524,18 +526,19 @@ class VDSClient:
             layout = manager.volumeDataLayout
             
             # Convert ranges to indices with proper rounding
+            # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
             sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
             
             inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
-            inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1])))
+            inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1]))) + 1
             crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
-            crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1])))
+            crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))) + 1
             
             if sample_range:
                 sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
             else:
                 sample_start_idx = 0
                 sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
