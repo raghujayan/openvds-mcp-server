@@ -12,4 +12,4 @@ services:
       - LOG_LEVEL=INFO
     stdin_open: true
     tty: true
-    command: python src/openvds_mcp_server.py
+    command: python3 src/openvds_mcp_server.py
