@@ -41,12 +41,29 @@ This MCP server bridges large-scale volumetric datasets (seismic surveys, geophy
 
 ## Installation
 
-### Requirements
+### macOS Users (Recommended: Docker)
+
+**OpenVDS Python wheels are not available for macOS.** The easiest way to run this server on macOS is using Docker:
+
+1. **Install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop)**
+
+2. **Build the Docker image**:
+   ```bash
+   ./run-docker.sh
+   ```
+
+3. **Configure Claude Desktop** - See [DOCKER.md](DOCKER.md) for complete setup instructions
+
+**📖 Full Docker Guide**: [DOCKER.md](DOCKER.md)
+
+### Linux/Windows Users
+
+#### Requirements
 - Python 3.11+
-- OpenVDS Python SDK
+- OpenVDS Python SDK (available via pip on Linux/Windows)
 - MCP SDK
 
-### Setup
+#### Setup
 
 1. Install dependencies:
 ```bash

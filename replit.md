@@ -10,6 +10,14 @@ An MCP (Model Context Protocol) server for Bluware OpenVDS that enables AI-assis
 
 ## Recent Changes
 
+**2025-10-14**: Docker deployment for macOS
+- Created complete Docker deployment solution for macOS (OpenVDS wheels not available for macOS)
+- Dockerfile with Linux Python 3.11 environment where openvds works
+- docker-compose.yml with NFS volume mount configuration
+- Comprehensive DOCKER.md guide with troubleshooting
+- run-docker.sh setup script for one-command deployment
+- Updated README.md with Docker as primary macOS option
+
 **2025-10-11**: Initial implementation and OpenVDS integration
 - Created MCP server with resources, tools, and prompts
 - **Implemented REAL OpenVDS integration using actual API**:

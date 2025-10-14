@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  openvds-mcp:
+    build: .
+    image: openvds-mcp-server
+    container_name: openvds-mcp-server
+    volumes:
+      - /Volumes/Hue NFS mount/datasets:/data:ro
+    environment:
+      - VDS_DATA_PATH=/data
+      - LOG_LEVEL=INFO
+    stdin_open: true
+    tty: true
+    command: python src/openvds_mcp_server.py
