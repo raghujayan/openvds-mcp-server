@@ -9,4 +9,43 @@ services:
     environment:
       - VDS_DATA_PATH=/vds-data/Howard_New:/vds-data/Howard_Old
       - LOG_LEVEL=INFO
+      # Elasticsearch configuration
+      - ES_ENABLED=true
+      - ES_URL=http://elasticsearch:9200
+      - ES_INDEX=vds-metadata
+      # Mount health checking
+      - MOUNT_HEALTH_CHECK_ENABLED=true
+      - MOUNT_HEALTH_CHECK_TIMEOUT=10
+      - MOUNT_HEALTH_CHECK_RETRIES=3
+    depends_on:
+      - elasticsearch
+    networks:
+      - vds-network
     command: python3 src/openvds_mcp_server.py
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: vds-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - vds-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+networks:
+  vds-network:
+    driver: bridge
+
+volumes:
+  es-data:
+    driver: local

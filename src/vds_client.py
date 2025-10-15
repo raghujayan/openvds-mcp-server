@@ -1,5 +1,10 @@
 """
 VDS Client - OpenVDS integration layer for REAL data access
+
+Enhanced with:
+- Mount health checking (VPN/NFS awareness)
+- Elasticsearch metadata integration (fast queries without opening VDS files)
+- Graceful fallback when ES or mounts unavailable
 """
 
 import logging
@@ -15,6 +20,10 @@ try:
 except ImportError:
     openvds = None
     HAS_OPENVDS = False
+
+# Import our new modules
+from mount_health import MountHealthChecker, MountHealthStatus
+from es_metadata_client import ESMetadataClient
 
 logger = logging.getLogger("vds-client")
 
@@ -32,30 +41,123 @@ class VDSClient:
         self.available_surveys: List[Dict[str, Any]] = []
         self.vds_handles: Dict[str, Any] = {}  # Cache of open VDS handles
         self.demo_mode = False
+
+        # Mount health checking
+        self.mount_health_enabled = os.getenv("MOUNT_HEALTH_CHECK_ENABLED", "true").lower() == "true"
+        self.mount_health_checker = MountHealthChecker(
+            timeout_seconds=float(os.getenv("MOUNT_HEALTH_CHECK_TIMEOUT", "10")),
+            max_retries=int(os.getenv("MOUNT_HEALTH_CHECK_RETRIES", "3"))
+        )
+        self.mount_health_results: Dict[str, Any] = {}
+
+        # Elasticsearch integration
+        self.es_enabled = os.getenv("ES_ENABLED", "true").lower() == "true"
+        self.es_client: Optional[ESMetadataClient] = None
+        self.use_elasticsearch = False  # Will be set during initialization
         
     async def initialize(self):
-        """Initialize the VDS client and check for available surveys"""
-        if not HAS_OPENVDS:
-            logger.warning("OpenVDS library not available, running in demo mode")
-            self.demo_mode = True
-            self._setup_demo_data()
-        else:
-            # Check if we're using the mock module
-            if hasattr(openvds, '__MOCK_MODULE__'):
-                logger.warning("OpenVDS mock module detected - real OpenVDS not installed, running in demo mode")
+        """
+        Initialize the VDS client with mount health checking and Elasticsearch
+
+        Initialization flow:
+        1. Check mount health
+        2. Try Elasticsearch for metadata
+        3. Fall back to direct VDS scanning if ES unavailable
+        4. Fall back to demo mode if all else fails
+        """
+        logger.info("Initializing VDS Client...")
+
+        # Step 1: Check mount health
+        await self._check_mount_health()
+
+        # Step 2: Try Elasticsearch connection
+        if self.es_enabled:
+            logger.info("Elasticsearch enabled, attempting connection...")
+            self.es_client = ESMetadataClient(
+                es_url=os.getenv("ES_URL", "http://elasticsearch:9200"),
+                index_name=os.getenv("ES_INDEX", "vds-metadata")
+            )
+            self.use_elasticsearch = await self.es_client.initialize()
+
+            if self.use_elasticsearch:
+                logger.info("✓ Elasticsearch connected - using fast metadata queries")
+                # Load surveys from Elasticsearch
+                await self._load_surveys_from_es()
+            else:
+                logger.warning("✗ Elasticsearch unavailable - falling back to direct VDS scanning")
+
+        # Step 3: Fall back to direct scanning if ES not available
+        if not self.use_elasticsearch:
+            if not HAS_OPENVDS:
+                logger.warning("OpenVDS library not available, running in demo mode")
                 self.demo_mode = True
                 self._setup_demo_data()
             else:
-                logger.info("OpenVDS library loaded successfully")
-                await self._scan_for_surveys()
-            
-            if not self.available_surveys:
-                logger.info("No VDS files found, using demo data")
-                self.demo_mode = True
-                self._setup_demo_data()
-        
+                # Check if we're using the mock module
+                if hasattr(openvds, '__MOCK_MODULE__'):
+                    logger.warning("OpenVDS mock module detected - real OpenVDS not installed, running in demo mode")
+                    self.demo_mode = True
+                    self._setup_demo_data()
+                else:
+                    logger.info("OpenVDS library loaded successfully")
+                    await self._scan_for_surveys()
+
+                if not self.available_surveys:
+                    logger.info("No VDS files found, using demo data")
+                    self.demo_mode = True
+                    self._setup_demo_data()
+
         self.is_connected = True
-        logger.info(f"VDS Client initialized (demo_mode={self.demo_mode}, surveys={len(self.available_surveys)})")
+        logger.info(
+            f"VDS Client initialized:\n"
+            f"  - Demo mode: {self.demo_mode}\n"
+            f"  - Elasticsearch: {self.use_elasticsearch}\n"
+            f"  - Mount health: {self.mount_health_enabled}\n"
+            f"  - Surveys available: {len(self.available_surveys)}"
+        )
+
+    async def _check_mount_health(self):
+        """Check health of all VDS data mounts"""
+        if not self.mount_health_enabled:
+            logger.info("Mount health checking disabled")
+            return
+
+        vds_paths = os.environ.get("VDS_DATA_PATH", "").split(":")
+        if not vds_paths or not vds_paths[0]:
+            logger.warning("No VDS_DATA_PATH configured")
+            return
+
+        logger.info(f"Checking health of {len(vds_paths)} mount(s)...")
+
+        self.mount_health_results = await self.mount_health_checker.check_multiple_mounts(vds_paths)
+
+        # Log results
+        healthy_count = 0
+        for path, result in self.mount_health_results.items():
+            if result.is_healthy:
+                healthy_count += 1
+                logger.info(f"✓ {result}")
+            else:
+                logger.error(f"✗ {result}")
+                logger.error(f"  Remediation: {self.mount_health_checker.get_remediation_advice(result)}")
+
+        if healthy_count == 0:
+            logger.error("WARNING: No healthy mounts detected! VDS data may be inaccessible.")
+        elif healthy_count < len(vds_paths):
+            logger.warning(f"WARNING: Only {healthy_count}/{len(vds_paths)} mounts are healthy")
+
+    async def _load_surveys_from_es(self):
+        """Load survey metadata from Elasticsearch"""
+        if not self.es_client or not self.use_elasticsearch:
+            return
+
+        try:
+            surveys = await self.es_client.list_surveys(max_results=1000)
+            self.available_surveys = surveys
+            logger.info(f"Loaded {len(surveys)} surveys from Elasticsearch")
+        except Exception as e:
+            logger.error(f"Failed to load surveys from Elasticsearch: {e}")
+            self.use_elasticsearch = False
     
     def _setup_demo_data(self):
         """Set up demo survey data for testing without real VDS files"""
@@ -220,21 +322,41 @@ class VDSClient:
         filter_region: Optional[str] = None,
         filter_year: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """List available surveys with optional filtering"""
+        """
+        List available surveys with optional filtering
+
+        Uses Elasticsearch if available for fast queries,
+        otherwise filters in-memory cached surveys
+        """
+        # Use Elasticsearch for filtering if available
+        if self.use_elasticsearch and self.es_client:
+            try:
+                return await self.es_client.list_surveys(
+                    filter_region=filter_region,
+                    filter_year=filter_year,
+                    max_results=1000
+                )
+            except Exception as e:
+                logger.error(f"Error querying Elasticsearch, falling back to cached data: {e}")
+
+        # Fall back to in-memory filtering
         surveys = self.available_surveys.copy()
-        
+
         if filter_region:
             surveys = [
                 s for s in surveys
-                if filter_region.lower() in s.get("region", "").lower()
+                if filter_region.lower() in s.get("region", "").lower() or
+                   filter_region.lower() in s.get("name", "").lower() or
+                   filter_region.lower() in s.get("file_path", "").lower()
             ]
-        
+
         if filter_year:
             surveys = [
                 s for s in surveys
-                if str(filter_year) in s.get("acquisition_date", "")
+                if str(filter_year) in s.get("acquisition_date", "") or
+                   str(filter_year) in s.get("file_path", "")
             ]
-        
+
         return surveys
     
     async def get_survey_metadata(
@@ -242,17 +364,36 @@ class VDSClient:
         survey_id: str,
         include_stats: bool = True
     ) -> Dict[str, Any]:
-        """Get detailed metadata for a specific survey"""
+        """
+        Get detailed metadata for a specific survey
+
+        Uses Elasticsearch if available for rich metadata,
+        otherwise uses cached survey data
+        """
+        # Try Elasticsearch first for detailed metadata
+        if self.use_elasticsearch and self.es_client:
+            try:
+                metadata = await self.es_client.get_survey_metadata(
+                    survey_id=survey_id,
+                    include_stats=include_stats
+                )
+                if "error" not in metadata:
+                    return metadata
+                # Fall through to cached data if ES returned error
+            except Exception as e:
+                logger.error(f"Error getting metadata from Elasticsearch: {e}")
+
+        # Fall back to cached survey data
         survey = next(
             (s for s in self.available_surveys if s["id"] == survey_id),
             None
         )
-        
+
         if not survey:
             return {"error": f"Survey not found: {survey_id}"}
-        
+
         metadata = survey.copy()
-        
+
         # For demo mode surveys, add simulated stats
         if self.demo_mode and include_stats:
             metadata["statistics"] = {
@@ -271,7 +412,7 @@ class VDSClient:
                 }
             }
             metadata["note"] = "Demo mode - simulated statistics"
-        
+
         return metadata
     
     async def extract_inline(
