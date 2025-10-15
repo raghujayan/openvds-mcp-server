@@ -40,8 +40,14 @@ class VDSClient:
             self.demo_mode = True
             self._setup_demo_data()
         else:
-            logger.info("OpenVDS library loaded successfully")
-            await self._scan_for_surveys()
+            # Check if we're using the mock module
+            if hasattr(openvds, '__MOCK_MODULE__'):
+                logger.warning("OpenVDS mock module detected - real OpenVDS not installed, running in demo mode")
+                self.demo_mode = True
+                self._setup_demo_data()
+            else:
+                logger.info("OpenVDS library loaded successfully")
+                await self._scan_for_surveys()
             
             if not self.available_surveys:
                 logger.info("No VDS files found, using demo data")
@@ -118,14 +124,30 @@ class VDSClient:
         try:
             # Open the VDS file
             vds_handle = openvds.open(str(vds_file))
-            manager = openvds.getAccessManager(vds_handle)
-            layout = manager.volumeDataLayout
-            
+            if not vds_handle:
+                logger.warning(f"openvds.open returned None for {vds_file}")
+                return None
+
+            # Get layout using module-level function
+            layout = openvds.getLayout(vds_handle)
+
+            # Check dimensionality
+            dimensionality = layout.getDimensionality()
+            if dimensionality < 3:
+                # Skip 2D files for now - MCP server is designed for 3D+ data
+                logger.debug(f"Skipping 2D VDS file: {vds_file}")
+                if vds_handle:
+                    try:
+                        openvds.close(vds_handle)
+                    except:
+                        pass
+                return None
+
             # Get axis descriptors
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
             sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-            
+
             # Extract coordinate ranges
             inline_range = [
                 int(inline_axis.getCoordinateMin()),
@@ -140,8 +162,7 @@ class VDSClient:
                 int(sample_axis.getCoordinateMax())
             ]
             
-            # Get metadata if available
-            metadata_access = layout.getMetadataReadAccess()
+            # Create survey name from filename
             survey_name = vds_file.stem.replace("_", " ").title()
             
             survey_info = {
@@ -162,12 +183,18 @@ class VDSClient:
             
             # Store the handle for later use
             self.vds_handles[vds_file.stem] = vds_handle
-            
+
             logger.info(f"Successfully loaded VDS: {survey_name}")
             return survey_info
-            
+
         except Exception as e:
             logger.error(f"Failed to extract metadata from {vds_file}: {e}")
+            # Close handle if it was opened
+            if 'vds_handle' in locals() and vds_handle:
+                try:
+                    openvds.close(vds_handle)
+                except:
+                    pass
             return None
     
     def _get_vds_handle(self, survey_id: str) -> Optional[Any]:
@@ -292,9 +319,10 @@ class VDSClient:
             if not vds_handle:
                 return {"error": "Failed to open VDS file"}
             
+            # Get layout and access manager using module-level functions
+            layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
-            layout = manager.volumeDataLayout
-            
+
             # Convert inline number to index with proper rounding
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
             inline_index = int(inline_axis.coordinateToSampleIndex(float(inline_number)))
@@ -405,10 +433,11 @@ class VDSClient:
             vds_handle = self._get_vds_handle(survey_id)
             if not vds_handle:
                 return {"error": "Failed to open VDS file"}
-            
+
+            # Get layout and access manager using module-level functions
+            layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
-            layout = manager.volumeDataLayout
-            
+
             # Convert crossline number to index with proper rounding
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
             crossline_index = int(crossline_axis.coordinateToSampleIndex(float(crossline_number)))
@@ -521,10 +550,11 @@ class VDSClient:
             vds_handle = self._get_vds_handle(survey_id)
             if not vds_handle:
                 return {"error": "Failed to open VDS file"}
-            
+
+            # Get layout and access manager using module-level functions
+            layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
-            layout = manager.volumeDataLayout
-            
+
             # Convert ranges to indices with proper rounding
             # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)

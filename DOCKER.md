@@ -5,7 +5,7 @@ This guide explains how to run the OpenVDS MCP Server in a Docker container on m
 ## Prerequisites
 
 1. **Docker Desktop for Mac** - [Download here](https://www.docker.com/products/docker-desktop)
-2. **VDS files accessible on your Mac** - Your NFS mount at `/Volumes/Hue NFS mount/datasets`
+2. **VDS files accessible on your Mac** - Your VDS data at `/Volumes/Hue/Datasets/VDS/`
 3. **Claude Desktop** - [Download here](https://claude.ai/download)
 
 ## Quick Start
@@ -29,7 +29,8 @@ You can test that the server initializes correctly:
 
 ```bash
 docker run --rm -i \
-  -v "/Volumes/Hue NFS mount/datasets:/data:ro" \
+  -v "/Volumes/Hue/Datasets/VDS:/vds-data:ro" \
+  -e VDS_DATA_PATH=/vds-data \
   openvds-mcp-server \
   python test_server.py
 ```
@@ -56,8 +57,12 @@ Edit your Claude Desktop configuration file:
         "run",
         "--rm",
         "-i",
+        "--platform",
+        "linux/amd64",
         "-v",
-        "/Volumes/Hue NFS mount/datasets:/data:ro",
+        "/Volumes/Hue/Datasets/VDS:/vds-data:ro",
+        "-e",
+        "VDS_DATA_PATH=/vds-data",
         "openvds-mcp-server",
         "python",
         "src/openvds_mcp_server.py"
@@ -78,10 +83,10 @@ Edit your Claude Desktop configuration file:
 
 ## How It Works
 
-1. **Docker Container**: Runs a Linux environment where `openvds` Python wheels work
-2. **Volume Mount**: Your Mac's `/Volumes/Hue NFS mount/datasets` is mounted read-only into the container at `/data`
+1. **Docker Container**: Runs a Linux amd64 environment where `openvds` Python wheels work
+2. **Volume Mount**: Your Mac's `/Volumes/Hue/Datasets/VDS` is mounted read-only into the container at `/vds-data`
 3. **MCP Protocol**: Uses stdio transport so Claude Desktop can communicate with the containerized server
-4. **Environment**: `VDS_DATA_PATH=/data` tells the server where to find VDS files
+4. **Environment**: `VDS_DATA_PATH=/vds-data` tells the server where to find VDS files
 
 ## Troubleshooting
 
@@ -97,15 +102,15 @@ Error: Docker daemon is not running
 
 If the server shows `demo_mode=True`:
 
-1. **Check your NFS mount is accessible**:
+1. **Check your VDS data directory is accessible**:
    ```bash
-   ls "/Volumes/Hue NFS mount/datasets"
+   ls "/Volumes/Hue/Datasets/VDS"
    ```
 
-2. **Verify the path in docker-compose.yml matches your actual mount**:
+2. **Verify the path in docker-compose.yml matches your actual location**:
    ```yaml
    volumes:
-     - /Volumes/Hue NFS mount/datasets:/data:ro
+     - /Volumes/Hue/Datasets/VDS:/vds-data:ro
    ```
 
 3. **Update the path if needed** and rebuild:
@@ -122,13 +127,13 @@ If the server shows `demo_mode=True`:
    tail -f ~/Library/Logs/Claude/mcp*.log
    ```
 
-### Permission denied on NFS mount
+### Permission denied on VDS data
 
 If you get permission errors accessing VDS files:
 
-1. **Check NFS mount permissions**:
+1. **Check directory permissions**:
    ```bash
-   ls -la "/Volumes/Hue NFS mount/datasets"
+   ls -la "/Volumes/Hue/Datasets/VDS"
    ```
 
 2. **Ensure Docker has file sharing permission**:
@@ -146,9 +151,9 @@ docker-compose run --rm openvds-mcp
 ### Run with custom VDS path
 
 ```bash
-docker run --rm -i \
-  -v "/path/to/your/vds/files:/data:ro" \
-  -e VDS_DATA_PATH=/data \
+docker run --rm -i --platform linux/amd64 \
+  -v "/path/to/your/vds/files:/vds-data:ro" \
+  -e VDS_DATA_PATH=/vds-data \
   openvds-mcp-server \
   python src/openvds_mcp_server.py
 ```
@@ -156,9 +161,9 @@ docker run --rm -i \
 ### Enable debug logging
 
 ```bash
-docker run --rm -i \
-  -v "/Volumes/Hue NFS mount/datasets:/data:ro" \
-  -e VDS_DATA_PATH=/data \
+docker run --rm -i --platform linux/amd64 \
+  -v "/Volumes/Hue/Datasets/VDS:/vds-data:ro" \
+  -e VDS_DATA_PATH=/vds-data \
   -e LOG_LEVEL=DEBUG \
   openvds-mcp-server \
   python src/openvds_mcp_server.py
@@ -185,24 +190,23 @@ When you make changes to the code:
          │ stdio (MCP Protocol)
          │
 ┌────────▼────────────────────────┐
-│ Docker Container (Linux)        │
+│ Docker Container (Linux amd64)  │
 │ ┌─────────────────────────────┐ │
 │ │ OpenVDS MCP Server          │ │
-│ │ - Python 3.11               │ │
-│ │ - openvds library           │ │
+│ │ - Python 3.10               │ │
+│ │ - openvds 3.4.6             │ │
 │ │ - MCP SDK                   │ │
 │ └─────────────────────────────┘ │
 │                                  │
 │ Volume Mount:                    │
-│ /data → /Volumes/Hue NFS mount   │
+│ /vds-data → /Volumes/Hue/.../VDS │
 └──────────────────────────────────┘
          │
          │ read VDS files
          │
 ┌────────▼────────────────────────┐
-│ NFS Mount (macOS)               │
-│ /Volumes/Hue NFS mount/datasets │
-│ \\10.3.3.5\Hue NFS mount        │
+│ VDS Data (macOS)                │
+│ /Volumes/Hue/Datasets/VDS       │
 └─────────────────────────────────┘
 ```
 
@@ -210,7 +214,7 @@ When you make changes to the code:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VDS_DATA_PATH` | `/data` | Colon-separated paths to VDS files |
+| `VDS_DATA_PATH` | `/vds-data` | Colon-separated paths to VDS files |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ## Security Notes

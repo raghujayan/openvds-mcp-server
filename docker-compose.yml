@@ -1,15 +1,12 @@
-version: '3.8'
-
 services:
   openvds-mcp:
+    platform: linux/amd64
     build: .
     image: openvds-mcp-server
     container_name: openvds-mcp-server
     volumes:
-      - /Volumes/Hue NFS mount/datasets:/data:ro
+      - /Users/raghu/vds-data:/vds-data:ro
     environment:
-      - VDS_DATA_PATH=/data
+      - VDS_DATA_PATH=/vds-data/Howard_New:/vds-data/Howard_Old
       - LOG_LEVEL=INFO
-    stdin_open: true
-    tty: true
     command: python3 src/openvds_mcp_server.py
