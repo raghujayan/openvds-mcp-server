@@ -78,11 +78,99 @@ class ESMetadataClient:
             self.is_connected = False
             return False
 
+    async def search_surveys(
+        self,
+        search_query: Optional[str] = None,
+        filter_region: Optional[str] = None,
+        filter_year: Optional[int] = None,
+        max_results: int = 1000,
+        include_verbose: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Search surveys with free-text query and filters
+
+        Args:
+            search_query: Free-text search across all fields
+            filter_region: Region filter
+            filter_year: Year filter
+            max_results: Maximum results
+            include_verbose: Include verbose metadata
+
+        Returns:
+            List of matching surveys
+        """
+        if not self.is_connected or not self.es:
+            logger.warning("Elasticsearch not connected")
+            return []
+
+        try:
+            # Build query with search_query
+            must_clauses = []
+
+            if search_query:
+                # Multi-field search
+                must_clauses.append({
+                    "query_string": {
+                        "query": f"*{search_query}*",
+                        "fields": ["file_path", "volume_type", "primary_channel", "axis_descriptors.name"],
+                        "default_operator": "OR"
+                    }
+                })
+
+            if filter_region:
+                must_clauses.append({
+                    "query_string": {
+                        "query": f"*{filter_region}*",
+                        "fields": ["file_path", "volume_type"],
+                        "default_operator": "AND"
+                    }
+                })
+
+            if filter_year:
+                must_clauses.append({
+                    "query_string": {
+                        "query": f"*{filter_year}*",
+                        "fields": ["file_path", "import_info.*"],
+                        "default_operator": "AND"
+                    }
+                })
+
+            # Build final query
+            if must_clauses:
+                query = {"bool": {"must": must_clauses}}
+            else:
+                query = {"match_all": {}}
+
+            # Execute search
+            size = min(max_results, 10000)
+            response = await self.es.search(
+                index=self.index_name,
+                query=query,
+                size=size,
+                sort=[{"last_modified": {"order": "desc"}}]
+            )
+
+            # Parse results
+            surveys = []
+            for hit in response['hits']['hits']:
+                source = hit['_source']
+                survey = self._convert_es_to_survey(source, include_verbose=include_verbose)
+                if survey:
+                    surveys.append(survey)
+
+            logger.info(f"Search found {len(surveys)} surveys")
+            return surveys
+
+        except Exception as e:
+            logger.error(f"Error searching Elasticsearch: {e}")
+            return []
+
     async def list_surveys(
         self,
         filter_region: Optional[str] = None,
         filter_year: Optional[int] = None,
-        max_results: int = 100
+        max_results: int = 100,
+        include_verbose: bool = False
     ) -> List[Dict[str, Any]]:
         """
         List available surveys from Elasticsearch
@@ -91,6 +179,7 @@ class ESMetadataClient:
             filter_region: Optional region filter
             filter_year: Optional year filter
             max_results: Maximum number of results to return
+            include_verbose: Include verbose metadata (axis/channel descriptors)
 
         Returns:
             List of survey metadata dictionaries
@@ -128,11 +217,14 @@ class ESMetadataClient:
             if not query["bool"]["must"]:
                 query = {"match_all": {}}
 
+            # Use size limit, capped at 10000 (Elasticsearch limit)
+            size = min(max_results, 10000)
+
             # Execute search
             response = await self.es.search(
                 index=self.index_name,
                 query=query,
-                size=max_results,
+                size=size,
                 sort=[{"last_modified": {"order": "desc"}}]
             )
 
@@ -140,7 +232,7 @@ class ESMetadataClient:
             surveys = []
             for hit in response['hits']['hits']:
                 source = hit['_source']
-                survey = self._convert_es_to_survey(source)
+                survey = self._convert_es_to_survey(source, include_verbose=include_verbose)
                 if survey:
                     surveys.append(survey)
 
@@ -207,12 +299,13 @@ class ESMetadataClient:
             logger.error(f"Error getting survey metadata: {e}")
             return {"error": f"Failed to get survey: {str(e)}"}
 
-    def _convert_es_to_survey(self, es_doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _convert_es_to_survey(self, es_doc: Dict[str, Any], include_verbose: bool = True) -> Optional[Dict[str, Any]]:
         """
         Convert Elasticsearch document to survey format
 
         Args:
             es_doc: Elasticsearch document
+            include_verbose: Include verbose fields like axis/channel descriptors (can be large)
 
         Returns:
             Survey dictionary in VDSClient format
@@ -265,10 +358,13 @@ class ESMetadataClient:
                 "dimensionality": es_doc.get("dimensions", 3),
                 "channel_count": len(es_doc.get("channel_descriptors", [1])),
                 "data_type": es_doc.get("volume_type", "3D Seismic"),
-                "primary_channel": es_doc.get("primary_channel", "Amplitude"),
-                "axis_descriptors": axis_descriptors,
-                "channel_descriptors": es_doc.get("channel_descriptors", [])
+                "primary_channel": es_doc.get("primary_channel", "Amplitude")
             }
+
+            # Only include verbose fields if requested (reduces response size)
+            if include_verbose:
+                survey["axis_descriptors"] = axis_descriptors
+                survey["channel_descriptors"] = es_doc.get("channel_descriptors", [])
 
             # Add inline/crossline/sample axis names if available
             for axis in axis_descriptors:
@@ -280,13 +376,15 @@ class ESMetadataClient:
                 elif "sample" in name.lower() or "time" in name.lower():
                     survey["sample_axis"] = name
 
-            # Add CRS info if available
-            if "crs_info" in es_doc:
-                survey["crs_info"] = es_doc["crs_info"]
+            # Only add verbose metadata if requested
+            if include_verbose:
+                # Add CRS info if available
+                if "crs_info" in es_doc:
+                    survey["crs_info"] = es_doc["crs_info"]
 
-            # Add spatial extent if available
-            if "spatial_extent" in es_doc:
-                survey["spatial_extent"] = es_doc["spatial_extent"]
+                # Add spatial extent if available
+                if "spatial_extent" in es_doc:
+                    survey["spatial_extent"] = es_doc["spatial_extent"]
 
             return survey
 

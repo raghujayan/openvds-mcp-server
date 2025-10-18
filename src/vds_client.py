@@ -24,6 +24,7 @@ except ImportError:
 # Import our new modules
 from mount_health import MountHealthChecker, MountHealthStatus
 from es_metadata_client import ESMetadataClient
+from query_cache import get_cache
 
 logger = logging.getLogger("vds-client")
 
@@ -54,6 +55,9 @@ class VDSClient:
         self.es_enabled = os.getenv("ES_ENABLED", "true").lower() == "true"
         self.es_client: Optional[ESMetadataClient] = None
         self.use_elasticsearch = False  # Will be set during initialization
+
+        # Query cache for performance
+        self.cache = get_cache()
         
     async def initialize(self):
         """
@@ -83,6 +87,9 @@ class VDSClient:
                 logger.info("✓ Elasticsearch connected - using fast metadata queries")
                 # Load surveys from Elasticsearch
                 await self._load_surveys_from_es()
+                # NOTE: VDS files will be opened on-demand when data extraction is requested
+                # Opening all 2858+ files at startup would take too long for MCP protocol
+                logger.info("VDS files will be opened on-demand for data extraction")
             else:
                 logger.warning("✗ Elasticsearch unavailable - falling back to direct VDS scanning")
 
@@ -152,12 +159,58 @@ class VDSClient:
             return
 
         try:
-            surveys = await self.es_client.list_surveys(max_results=1000)
+            # Load a reasonable number of surveys for caching
+            # We don't need ALL surveys in memory - queries will go to ES directly
+            surveys = await self.es_client.list_surveys(max_results=500)
             self.available_surveys = surveys
-            logger.info(f"Loaded {len(surveys)} surveys from Elasticsearch")
+            logger.info(f"Loaded {len(surveys)} surveys from Elasticsearch (cached sample)")
         except Exception as e:
             logger.error(f"Failed to load surveys from Elasticsearch: {e}")
             self.use_elasticsearch = False
+
+    async def _open_vds_handles_from_metadata(self):
+        """
+        Open VDS files and cache handles based on metadata from Elasticsearch
+
+        This ensures that even when using ES for metadata, we can still
+        extract data from VDS files by having open handles cached.
+        """
+        if not HAS_OPENVDS or not self.available_surveys:
+            return
+
+        opened_count = 0
+        failed_count = 0
+
+        for survey in self.available_surveys:
+            survey_id = survey.get("id")
+            file_path = survey.get("file_path")
+
+            if not file_path or file_path.startswith("demo://"):
+                continue
+
+            # Check if file exists and is accessible
+            path = Path(file_path)
+            if not path.exists():
+                logger.warning(f"VDS file not found: {file_path}")
+                failed_count += 1
+                continue
+
+            try:
+                # Open VDS file and cache the handle
+                vds_handle = openvds.open(str(file_path))
+                if vds_handle:
+                    self.vds_handles[survey_id] = vds_handle
+                    opened_count += 1
+                    logger.debug(f"Opened VDS handle for: {survey_id}")
+                else:
+                    logger.warning(f"openvds.open returned None for: {file_path}")
+                    failed_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed to open VDS file {file_path}: {e}")
+                failed_count += 1
+
+        logger.info(f"VDS handles opened: {opened_count} successful, {failed_count} failed")
     
     def _setup_demo_data(self):
         """Set up demo survey data for testing without real VDS files"""
@@ -317,24 +370,114 @@ class VDSClient:
             logger.error(f"Failed to open VDS file for {survey_id}: {e}")
             return None
     
+    async def search_surveys(
+        self,
+        search_query: Optional[str] = None,
+        filter_region: Optional[str] = None,
+        filter_year: Optional[int] = None,
+        max_results: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Search surveys with free-text query and filters
+
+        Args:
+            search_query: Free-text search (searches file paths and names)
+            filter_region: Region filter
+            filter_year: Year filter
+            max_results: Maximum results (internal limit)
+        """
+        # Check cache first
+        cached = self.cache.get_search_results(
+            search_query=search_query,
+            filter_region=filter_region,
+            filter_year=filter_year,
+            max_results=max_results
+        )
+        if cached is not None:
+            logger.info(f"Cache HIT: Returning {len(cached)} cached results")
+            return cached
+
+        # Use Elasticsearch for search if available
+        if self.use_elasticsearch and self.es_client:
+            try:
+                results = await self.es_client.search_surveys(
+                    search_query=search_query,
+                    filter_region=filter_region,
+                    filter_year=filter_year,
+                    max_results=max_results
+                )
+                # Cache the results
+                self.cache.set_search_results(
+                    results,
+                    search_query=search_query,
+                    filter_region=filter_region,
+                    filter_year=filter_year,
+                    max_results=max_results
+                )
+                return results
+            except Exception as e:
+                logger.error(f"Error searching Elasticsearch: {e}")
+
+        # Fall back to in-memory search
+        surveys = self.available_surveys.copy()
+
+        # Apply free-text search
+        if search_query:
+            search_lower = search_query.lower()
+            surveys = [
+                s for s in surveys
+                if search_lower in s.get("name", "").lower() or
+                   search_lower in s.get("file_path", "").lower() or
+                   search_lower in s.get("region", "").lower() or
+                   search_lower in s.get("data_type", "").lower()
+            ]
+
+        # Apply region filter
+        if filter_region:
+            surveys = [
+                s for s in surveys
+                if filter_region.lower() in s.get("region", "").lower() or
+                   filter_region.lower() in s.get("name", "").lower() or
+                   filter_region.lower() in s.get("file_path", "").lower()
+            ]
+
+        # Apply year filter
+        if filter_year:
+            surveys = [
+                s for s in surveys
+                if str(filter_year) in s.get("acquisition_date", "") or
+                   str(filter_year) in s.get("file_path", "")
+            ]
+
+        return surveys[:max_results]
+
     async def list_surveys(
         self,
         filter_region: Optional[str] = None,
-        filter_year: Optional[int] = None
+        filter_year: Optional[int] = None,
+        max_results: int = 50  # Default to 50 to keep response under 1MB
     ) -> List[Dict[str, Any]]:
         """
         List available surveys with optional filtering
 
         Uses Elasticsearch if available for fast queries,
         otherwise filters in-memory cached surveys
+
+        Args:
+            filter_region: Optional region filter
+            filter_year: Optional year filter
+            max_results: Maximum number of results (default 50, max 200)
         """
+        # Cap max_results to prevent MCP message size issues (>1MB)
+        max_results = min(max_results, 200)
+
         # Use Elasticsearch for filtering if available
         if self.use_elasticsearch and self.es_client:
             try:
                 return await self.es_client.list_surveys(
                     filter_region=filter_region,
                     filter_year=filter_year,
-                    max_results=1000
+                    max_results=max_results
                 )
             except Exception as e:
                 logger.error(f"Error querying Elasticsearch, falling back to cached data: {e}")
@@ -357,8 +500,74 @@ class VDSClient:
                    str(filter_year) in s.get("file_path", "")
             ]
 
-        return surveys
-    
+        # Apply max_results limit
+        return surveys[:max_results]
+
+    async def get_survey_statistics(
+        self,
+        filter_region: Optional[str] = None,
+        filter_year: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Get aggregate statistics about available surveys
+
+        Returns counts, distribution, and sample surveys without loading all data
+        """
+        # Use Elasticsearch aggregations if available
+        if self.use_elasticsearch and self.es_client:
+            try:
+                return await self.es_client.get_index_stats()
+            except Exception as e:
+                logger.error(f"Error getting ES stats: {e}")
+
+        # Fall back to in-memory analysis
+        surveys = await self.search_surveys(
+            filter_region=filter_region,
+            filter_year=filter_year,
+            max_results=10000
+        )
+
+        # Calculate statistics
+        total_count = len(surveys)
+
+        # Group by data type
+        type_distribution = {}
+        for survey in surveys:
+            dtype = survey.get("data_type", "Unknown")
+            type_distribution[dtype] = type_distribution.get(dtype, 0) + 1
+
+        # Extract unique regions from file paths
+        regions = {}
+        for survey in surveys:
+            path = survey.get("file_path", "")
+            # Simple heuristic: extract meaningful path segments
+            parts = path.split("/")
+            for part in parts:
+                if len(part) > 3 and not part.endswith(".vds"):
+                    regions[part] = regions.get(part, 0) + 1
+
+        # Get top regions
+        top_regions = sorted(regions.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        return {
+            "total_surveys": total_count,
+            "filters_applied": {
+                "region": filter_region,
+                "year": filter_year
+            },
+            "type_distribution": type_distribution,
+            "top_regions": {k: v for k, v in top_regions},
+            "sample_surveys": surveys[:5],
+            "recommendations": {
+                "total_surveys": total_count,
+                "suggestion": (
+                    "Use search_surveys with filters to narrow down results"
+                    if total_count > 100
+                    else f"Found {total_count} surveys - use search_surveys to list them"
+                )
+            }
+        }
+
     async def get_survey_metadata(
         self,
         survey_id: str,
@@ -769,6 +978,102 @@ class VDSClient:
             logger.error(f"Error extracting volume: {e}")
             return {"error": f"Data extraction failed: {str(e)}"}
     
+    async def get_facets(
+        self,
+        filter_region: Optional[str] = None,
+        filter_year: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Get pre-computed facets for fast filtering
+
+        Returns available regions, years, data types with counts
+        """
+        # Check cache first
+        cached = self.cache.get_facets(
+            filter_region=filter_region,
+            filter_year=filter_year
+        )
+        if cached is not None:
+            logger.info("Cache HIT: Returning cached facets")
+            return cached
+
+        # Use Elasticsearch aggregations if available
+        if self.use_elasticsearch and self.es_client:
+            try:
+                # Get all matching surveys first
+                surveys = await self.search_surveys(
+                    filter_region=filter_region,
+                    filter_year=filter_year,
+                    max_results=10000
+                )
+
+                # Compute facets from results
+                facets = self._compute_facets(surveys)
+
+                # Cache for 15 minutes
+                self.cache.set_facets(
+                    facets,
+                    filter_region=filter_region,
+                    filter_year=filter_year
+                )
+
+                return facets
+
+            except Exception as e:
+                logger.error(f"Error computing facets: {e}")
+
+        # Fall back to in-memory computation
+        surveys = await self.search_surveys(
+            filter_region=filter_region,
+            filter_year=filter_year,
+            max_results=10000
+        )
+        return self._compute_facets(surveys)
+
+    def _compute_facets(self, surveys: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Compute facets from survey list"""
+        regions = {}
+        years = {}
+        data_types = {}
+
+        for survey in surveys:
+            # Extract region from path
+            path = survey.get("file_path", "")
+            path_parts = [p for p in path.split("/") if p and len(p) > 2 and not p.endswith(".vds")]
+            for part in path_parts[:3]:  # Use top-level path segments
+                regions[part] = regions.get(part, 0) + 1
+
+            # Extract year from path or metadata
+            for part in path.split("/"):
+                if part.isdigit() and len(part) == 4 and 2000 <= int(part) <= 2030:
+                    years[int(part)] = years.get(int(part), 0) + 1
+
+            # Data type
+            dtype = survey.get("data_type", "Unknown")
+            data_types[dtype] = data_types.get(dtype, 0) + 1
+
+        # Sort and limit
+        top_regions = sorted(regions.items(), key=lambda x: x[1], reverse=True)[:20]
+        all_years = sorted(years.items(), key=lambda x: x[0], reverse=True)
+        top_types = sorted(data_types.items(), key=lambda x: x[1], reverse=True)
+
+        return {
+            "total_surveys": len(surveys),
+            "regions": {k: v for k, v in top_regions},
+            "years": {k: v for k, v in all_years},
+            "data_types": {k: v for k, v in top_types},
+            "facet_counts": {
+                "regions": len(regions),
+                "years": len(years),
+                "data_types": len(data_types)
+            },
+            "cache_info": "Cached for 15 minutes"
+        }
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache performance statistics"""
+        return self.cache.get_stats()
+
     def __del__(self):
         """Clean up VDS handles on deletion"""
         for handle in self.vds_handles.values():

@@ -83,10 +83,9 @@ class MountHealthChecker:
 
         # Try to access the mount with timeout
         try:
-            # Use asyncio timeout for the entire check
-            async with asyncio.timeout(self.timeout_seconds):
-                # Attempt to list directory contents
-                # This will detect stale NFS mounts
+            # Attempt to list directory contents
+            # This will detect stale NFS mounts
+            async def _check_mount():
                 try:
                     # Run in thread pool since os.listdir is blocking
                     loop = asyncio.get_event_loop()
@@ -131,6 +130,9 @@ class MountHealthChecker:
                             response_time_ms=(time.time() - start_time) * 1000,
                             error_message=f"OS error accessing mount: {e}"
                         )
+
+            # Use asyncio.wait_for for Python 3.10 compatibility
+            return await asyncio.wait_for(_check_mount(), timeout=self.timeout_seconds)
 
         except asyncio.TimeoutError:
             return MountHealthResult(

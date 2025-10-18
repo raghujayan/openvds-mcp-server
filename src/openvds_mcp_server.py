@@ -219,20 +219,79 @@ class OpenVDSMCPServer:
                     }
                 ),
                 Tool(
-                    name="list_available_surveys",
-                    description="List all available seismic surveys with basic metadata",
+                    name="search_surveys",
+                    description="Search and explore VDS surveys interactively. Use this for initial discovery and filtering. Returns summary statistics and sample results to help users refine their search.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "search_query": {
+                                "type": "string",
+                                "description": "Free-text search query (searches file paths, names, regions). Examples: 'Brazil', 'Santos Basin', '2023', 'PSTM'"
+                            },
+                            "filter_region": {
+                                "type": "string",
+                                "description": "Filter by region/location in file path"
+                            },
+                            "filter_year": {
+                                "type": "integer",
+                                "description": "Filter by year in file path or metadata"
+                            },
+                            "offset": {
+                                "type": "integer",
+                                "description": "Offset for pagination (default 0). Use this to get next batch of results.",
+                                "default": 0,
+                                "minimum": 0
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Number of results per page (default 20, max 100)",
+                                "default": 20,
+                                "minimum": 1,
+                                "maximum": 100
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="get_survey_stats",
+                    description="Get aggregate statistics about available surveys without loading individual records. Use this to understand the dataset before querying.",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "filter_region": {
                                 "type": "string",
-                                "description": "Optional region filter (e.g., 'Gulf of Mexico')"
+                                "description": "Optional region filter"
                             },
                             "filter_year": {
                                 "type": "integer",
-                                "description": "Optional year filter for acquisition date"
+                                "description": "Optional year filter"
                             }
                         }
+                    }
+                ),
+                Tool(
+                    name="get_facets",
+                    description="Get pre-computed facets (filters) for instant filtering. Returns available regions, years, data types, and counts. MUCH faster than search_surveys for initial exploration.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "filter_region": {
+                                "type": "string",
+                                "description": "Pre-filter by region before computing facets"
+                            },
+                            "filter_year": {
+                                "type": "integer",
+                                "description": "Pre-filter by year before computing facets"
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="get_cache_stats",
+                    description="Get cache performance statistics to understand query performance",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
                     }
                 )
             ]
@@ -273,11 +332,61 @@ class OpenVDSMCPServer:
                         arguments["survey_id"],
                         arguments.get("include_stats", True)
                     )
-                elif name == "list_available_surveys":
-                    result = await self.vds_client.list_surveys(
+                elif name == "search_surveys":
+                    search_query = arguments.get("search_query")
+                    filter_region = arguments.get("filter_region")
+                    filter_year = arguments.get("filter_year")
+                    offset = arguments.get("offset", 0)
+                    limit = arguments.get("limit", 20)
+
+                    # Get all matching surveys (up to reasonable limit)
+                    all_matching = await self.vds_client.search_surveys(
+                        search_query=search_query,
+                        filter_region=filter_region,
+                        filter_year=filter_year,
+                        max_results=1000  # Internal limit to prevent ES overload
+                    )
+
+                    total_count = len(all_matching)
+                    page_surveys = all_matching[offset:offset + limit]
+
+                    result = {
+                        "search_query": search_query or "all",
+                        "filters": {
+                            "region": filter_region,
+                            "year": filter_year
+                        },
+                        "pagination": {
+                            "total_results": total_count,
+                            "offset": offset,
+                            "limit": limit,
+                            "returned": len(page_surveys),
+                            "has_more": offset + limit < total_count,
+                            "next_offset": offset + limit if offset + limit < total_count else None
+                        },
+                        "surveys": page_surveys,
+                        "help": {
+                            "next_page": f"To get next page, use offset={offset + limit}" if offset + limit < total_count else "No more results",
+                            "refine_search": "Use filter_region or filter_year to narrow results",
+                            "get_details": "Use get_survey_info with a specific survey_id for full metadata"
+                        }
+                    }
+
+                elif name == "get_survey_stats":
+                    result = await self.vds_client.get_survey_statistics(
                         filter_region=arguments.get("filter_region"),
                         filter_year=arguments.get("filter_year")
                     )
+
+                elif name == "get_facets":
+                    result = await self.vds_client.get_facets(
+                        filter_region=arguments.get("filter_region"),
+                        filter_year=arguments.get("filter_year")
+                    )
+
+                elif name == "get_cache_stats":
+                    result = self.vds_client.get_cache_stats()
+
                 else:
                     result = {"error": f"Unknown tool: {name}"}
                 
