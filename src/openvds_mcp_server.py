@@ -8,6 +8,7 @@ Bluware OpenVDS seismic and volumetric data through natural language queries.
 
 import asyncio
 import logging
+import base64
 from typing import Any, Optional
 from pathlib import Path
 
@@ -27,10 +28,23 @@ from mcp.types import (
 from pydantic import BaseModel, Field, AnyUrl
 import json
 
+
+def detect_image_format(img_bytes: bytes) -> str:
+    """Detect image format from magic bytes"""
+    if img_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+        return "image/png"
+    elif img_bytes[:3] == b'\xff\xd8\xff':
+        return "image/jpeg"
+    else:
+        return "image/png"  # Default to PNG
+
+
 try:
     from .vds_client import VDSClient
+    from .agent_manager import SeismicAgentManager
 except ImportError:
     from vds_client import VDSClient
+    from agent_manager import SeismicAgentManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openvds-mcp-server")
@@ -42,6 +56,7 @@ class OpenVDSMCPServer:
     def __init__(self):
         self.server = Server("openvds-mcp-server")
         self.vds_client: Optional[VDSClient] = None
+        self.agent_manager: Optional[SeismicAgentManager] = None
         self.setup_handlers()
     
     def setup_handlers(self):
@@ -293,20 +308,217 @@ class OpenVDSMCPServer:
                         "type": "object",
                         "properties": {}
                     }
+                ),
+                Tool(
+                    name="extract_inline_image",
+                    description="Extract a SINGLE inline slice and generate a seismic image visualization. Returns PNG image that Claude can view and analyze for structural features, faults, and data quality. FOR BULK EXTRACTIONS (multiple inlines, ranges, patterns like 'every Nth'), use agent_start_extraction instead.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "inline_number": {
+                                "type": "integer",
+                                "description": "Inline number to extract"
+                            },
+                            "sample_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Optional [start, end] sample range",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "colormap": {
+                                "type": "string",
+                                "description": "Color scheme: 'seismic' (red-white-blue), 'gray', or 'petrel'",
+                                "default": "seismic",
+                                "enum": ["seismic", "gray", "petrel"]
+                            },
+                            "clip_percentile": {
+                                "type": "number",
+                                "description": "Amplitude clipping percentile (default 99.0)",
+                                "default": 99.0,
+                                "minimum": 90.0,
+                                "maximum": 100.0
+                            }
+                        },
+                        "required": ["survey_id", "inline_number"]
+                    }
+                ),
+                Tool(
+                    name="extract_crossline_image",
+                    description="Extract a SINGLE crossline slice and generate a seismic image visualization. Returns PNG image for visual analysis. FOR BULK EXTRACTIONS (multiple crosslines, ranges, patterns like 'every Nth', 'skipping 100'), use agent_start_extraction instead.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "crossline_number": {
+                                "type": "integer",
+                                "description": "Crossline number to extract"
+                            },
+                            "sample_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Optional [start, end] sample range",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "colormap": {
+                                "type": "string",
+                                "description": "Color scheme: 'seismic', 'gray', or 'petrel'",
+                                "default": "seismic",
+                                "enum": ["seismic", "gray", "petrel"]
+                            },
+                            "clip_percentile": {
+                                "type": "number",
+                                "description": "Amplitude clipping percentile (default 99.0)",
+                                "default": 99.0,
+                                "minimum": 90.0,
+                                "maximum": 100.0
+                            }
+                        },
+                        "required": ["survey_id", "crossline_number"]
+                    }
+                ),
+                Tool(
+                    name="extract_timeslice_image",
+                    description="Extract a time/depth slice (map view) and generate a seismic image visualization. Returns PNG image showing amplitude distribution across the survey area at a specific time/depth.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "time_value": {
+                                "type": "integer",
+                                "description": "Time/depth value to extract"
+                            },
+                            "inline_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Optional [start, end] inline range",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "crossline_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Optional [start, end] crossline range",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "colormap": {
+                                "type": "string",
+                                "description": "Color scheme: 'seismic', 'gray', or 'petrel'",
+                                "default": "seismic",
+                                "enum": ["seismic", "gray", "petrel"]
+                            },
+                            "clip_percentile": {
+                                "type": "number",
+                                "description": "Amplitude clipping percentile (default 99.0)",
+                                "default": 99.0,
+                                "minimum": 90.0,
+                                "maximum": 100.0
+                            }
+                        },
+                        "required": ["survey_id", "time_value"]
+                    }
+                ),
+                # Agent tools
+                Tool(
+                    name="agent_start_extraction",
+                    description="**USE THIS FOR BULK/MULTIPLE EXTRACTIONS** - Start autonomous extraction from natural language instruction. The agent will parse the instruction and execute extractions in the background (non-blocking). Use this for: multiple slices, ranges, patterns (every Nth, skipping N), or any instruction with 'all', 'every', 'multiple'. Check progress with agent_get_status. Examples: 'Extract all inlines from 51000 to 59000 at 2000 spacing', 'Extract crosslines skipping 100 for QC', 'Extract every 500th inline', 'Extract 3 representative inlines'",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "VDS survey identifier"
+                            },
+                            "instruction": {
+                                "type": "string",
+                                "description": "Natural language extraction instruction"
+                            },
+                            "auto_execute": {
+                                "type": "boolean",
+                                "description": "Start execution immediately (default: True)",
+                                "default": True
+                            }
+                        },
+                        "required": ["survey_id", "instruction"]
+                    }
+                ),
+                Tool(
+                    name="agent_get_status",
+                    description="Get status of autonomous agent including progress, state, and current task",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Optional session ID (defaults to active session)"
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="agent_pause",
+                    description="Pause agent execution. The agent will pause after completing the current task. Use agent_resume to continue.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Optional session ID (defaults to active session)"
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="agent_resume",
+                    description="Resume paused agent execution",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Optional session ID (defaults to active session)"
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="agent_get_results",
+                    description="Get extraction results from completed or active session. Returns all completed and failed tasks with statistics.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Optional session ID (defaults to active session)"
+                            }
+                        }
+                    }
                 )
             ]
         
         @self.server.call_tool()
-        async def call_tool(name: str, arguments: Any) -> list[TextContent]:
+        async def call_tool(name: str, arguments: Any) -> list[TextContent | ImageContent]:
             """Execute a VDS data extraction tool"""
             logger.info(f"Calling tool: {name} with args: {arguments}")
-            
+
             if not self.vds_client:
                 return [TextContent(
                     type="text",
                     text=json.dumps({"error": "VDS client not initialized"})
                 )]
-            
+
             try:
                 if name == "extract_inline":
                     result = await self.vds_client.extract_inline(
@@ -387,9 +599,188 @@ class OpenVDSMCPServer:
                 elif name == "get_cache_stats":
                     result = self.vds_client.get_cache_stats()
 
+                elif name == "extract_inline_image":
+                    result = await self.vds_client.extract_inline_image(
+                        arguments["survey_id"],
+                        arguments["inline_number"],
+                        arguments.get("sample_range"),
+                        arguments.get("colormap", "seismic"),
+                        arguments.get("clip_percentile", 99.0)
+                    )
+                    if "image_data" in result:
+                        # Return image as ImageContent along with metadata as TextContent
+                        img_bytes = result["image_data"]
+                        img_format = detect_image_format(img_bytes)
+                        img_base64 = base64.b64encode(img_bytes).decode()
+                        # Use data_summary or statistics depending on which exists
+                        stats = result.get("statistics") or result.get("data_summary", {})
+                        metadata = {
+                            "survey_id": result["survey_id"],
+                            "inline_number": result["inline_number"],
+                            "statistics": stats,
+                            "colormap": result["colormap"],
+                            "image_size_kb": result["image_size_kb"],
+                            "image_format": img_format
+                        }
+                        return [
+                            ImageContent(
+                                type="image",
+                                data=img_base64,
+                                mimeType=img_format
+                            ),
+                            TextContent(
+                                type="text",
+                                text=json.dumps(metadata, indent=2)
+                            )
+                        ]
+                    else:
+                        # Error case - return text
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps(result, indent=2)
+                        )]
+
+                elif name == "extract_crossline_image":
+                    result = await self.vds_client.extract_crossline_image(
+                        arguments["survey_id"],
+                        arguments["crossline_number"],
+                        arguments.get("sample_range"),
+                        arguments.get("colormap", "seismic"),
+                        arguments.get("clip_percentile", 99.0)
+                    )
+                    if "image_data" in result:
+                        # Return image as ImageContent along with metadata as TextContent
+                        img_bytes = result["image_data"]
+                        img_format = detect_image_format(img_bytes)
+                        img_base64 = base64.b64encode(img_bytes).decode()
+                        # Use data_summary or statistics depending on which exists
+                        stats = result.get("statistics") or result.get("data_summary", {})
+                        metadata = {
+                            "survey_id": result["survey_id"],
+                            "crossline_number": result["crossline_number"],
+                            "statistics": stats,
+                            "colormap": result["colormap"],
+                            "image_size_kb": result["image_size_kb"],
+                            "image_format": img_format
+                        }
+                        return [
+                            ImageContent(
+                                type="image",
+                                data=img_base64,
+                                mimeType=img_format
+                            ),
+                            TextContent(
+                                type="text",
+                                text=json.dumps(metadata, indent=2)
+                            )
+                        ]
+                    else:
+                        # Error case - return text
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps(result, indent=2)
+                        )]
+
+                elif name == "extract_timeslice_image":
+                    result = await self.vds_client.extract_timeslice_image(
+                        arguments["survey_id"],
+                        arguments["time_value"],
+                        arguments.get("inline_range"),
+                        arguments.get("crossline_range"),
+                        arguments.get("colormap", "seismic"),
+                        arguments.get("clip_percentile", 99.0)
+                    )
+                    if "image_data" in result:
+                        # Return image as ImageContent along with metadata as TextContent
+                        img_bytes = result["image_data"]
+                        img_format = detect_image_format(img_bytes)
+                        img_base64 = base64.b64encode(img_bytes).decode()
+                        # Use data_summary or statistics depending on which exists
+                        stats = result.get("statistics") or result.get("data_summary", {})
+                        metadata = {
+                            "survey_id": result["survey_id"],
+                            "time_value": result["time_value"],
+                            "inline_range": result["inline_range"],
+                            "crossline_range": result["crossline_range"],
+                            "statistics": stats,
+                            "colormap": result["colormap"],
+                            "image_size_kb": result["image_size_kb"],
+                            "image_format": img_format
+                        }
+                        return [
+                            ImageContent(
+                                type="image",
+                                data=img_base64,
+                                mimeType=img_format
+                            ),
+                            TextContent(
+                                type="text",
+                                text=json.dumps(metadata, indent=2)
+                            )
+                        ]
+                    else:
+                        # Error case - return text
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps(result, indent=2)
+                        )]
+
+                # Agent tools
+                elif name == "agent_start_extraction":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = await self.agent_manager.start_extraction(
+                        arguments["survey_id"],
+                        arguments["instruction"],
+                        arguments.get("auto_execute", True)
+                    )
+
+                elif name == "agent_get_status":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.get_status(
+                        arguments.get("session_id")
+                    )
+
+                elif name == "agent_pause":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.pause_session(
+                        arguments.get("session_id")
+                    )
+
+                elif name == "agent_resume":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.resume_session(
+                        arguments.get("session_id")
+                    )
+
+                elif name == "agent_get_results":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.get_results(
+                        arguments.get("session_id")
+                    )
+
                 else:
                     result = {"error": f"Unknown tool: {name}"}
-                
+
                 return [TextContent(
                     type="text",
                     text=json.dumps(result, indent=2)
@@ -542,7 +933,11 @@ Please:
         """Run the MCP server"""
         self.vds_client = VDSClient()
         await self.vds_client.initialize()
-        
+
+        # Initialize agent manager
+        self.agent_manager = SeismicAgentManager(self.vds_client)
+        logger.info("✓ Agent manager initialized and ready")
+
         logger.info("Starting OpenVDS MCP Server...")
         async with stdio_server() as (read_stream, write_stream):
             await self.server.run(

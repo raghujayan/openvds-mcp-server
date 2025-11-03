@@ -25,6 +25,7 @@ except ImportError:
 from mount_health import MountHealthChecker, MountHealthStatus
 from es_metadata_client import ESMetadataClient
 from query_cache import get_cache
+from seismic_viz import get_visualizer
 
 logger = logging.getLogger("vds-client")
 
@@ -978,6 +979,352 @@ class VDSClient:
             logger.error(f"Error extracting volume: {e}")
             return {"error": f"Data extraction failed: {str(e)}"}
     
+    async def extract_inline_image(
+        self,
+        survey_id: str,
+        inline_number: int,
+        sample_range: Optional[List[int]] = None,
+        colormap: str = 'seismic',
+        clip_percentile: float = 99.0
+    ) -> Dict[str, Any]:
+        """
+        Extract inline and generate seismic image
+
+        Args:
+            survey_id: Survey identifier
+            inline_number: Inline number to extract
+            sample_range: Optional [start, end] sample range
+            colormap: 'seismic' (red-white-blue), 'gray', or 'petrel'
+            clip_percentile: Amplitude clipping percentile (default 99%)
+
+        Returns:
+            Dict with image_data (PNG bytes) and metadata
+        """
+        # First extract the data
+        extraction_result = await self.extract_inline(survey_id, inline_number, sample_range)
+
+        if "error" in extraction_result:
+            return extraction_result
+
+        # If demo mode, return simulated image info
+        if extraction_result.get("note") == "Demo mode - simulated data":
+            return {
+                **extraction_result,
+                "visualization": "Image generation not available in demo mode",
+                "suggestion": "Connect to real VDS data to generate seismic images"
+            }
+
+        # Extract the data again to get the NumPy buffer (we need to refactor this)
+        # For now, let's get the data by re-extracting
+        try:
+            vds_handle = self._get_vds_handle(survey_id)
+            if not vds_handle:
+                return {"error": "Failed to open VDS file"}
+
+            layout = openvds.getLayout(vds_handle)
+            manager = openvds.getAccessManager(vds_handle)
+
+            # Get the survey metadata for ranges
+            survey = await self.get_survey_metadata(survey_id, include_stats=False)
+
+            # Convert inline number to index
+            inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
+            inline_index = int(inline_axis.coordinateToSampleIndex(float(inline_number)))
+
+            # Define sample range
+            if sample_range:
+                sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
+                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+            else:
+                sample_start_idx = 0
+                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_range = survey["sample_range"]
+
+            # Define voxel range
+            voxel_min = (sample_start_idx, 0, inline_index)
+            voxel_max = (
+                sample_end_idx,
+                layout.getDimensionNumSamples(self.CROSSLINE_DIM),
+                inline_index + 1
+            )
+
+            # Extract data
+            num_crosslines = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_samples = sample_end_idx - sample_start_idx
+            buffer = np.empty((num_crosslines, num_samples), dtype=np.float32)
+
+            request = manager.requestVolumeSubset(
+                data_out=buffer,
+                dimensionsND=openvds.DimensionsND.Dimensions_012,
+                min=voxel_min,
+                max=voxel_max,
+                lod=0,
+                channel=0
+            )
+            request.waitForCompletion()
+
+            # Generate visualization
+            visualizer = get_visualizer()
+            img_bytes = visualizer.create_inline_image(
+                data=buffer,
+                inline_number=inline_number,
+                crossline_range=tuple(survey["crossline_range"]),
+                sample_range=tuple(sample_range),
+                colormap=colormap,
+                clip_percentile=clip_percentile
+            )
+
+            # Compress if needed
+            img_bytes = visualizer.compress_image(img_bytes, max_size_kb=800)
+
+            return {
+                **extraction_result,
+                "image_data": img_bytes,
+                "image_format": "PNG",
+                "image_size_kb": len(img_bytes) / 1024,
+                "colormap": colormap,
+                "clip_percentile": clip_percentile
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating inline image: {e}")
+            return {"error": f"Image generation failed: {str(e)}"}
+
+    async def extract_crossline_image(
+        self,
+        survey_id: str,
+        crossline_number: int,
+        sample_range: Optional[List[int]] = None,
+        colormap: str = 'seismic',
+        clip_percentile: float = 99.0
+    ) -> Dict[str, Any]:
+        """Extract crossline and generate seismic image"""
+        # Similar implementation to inline
+        extraction_result = await self.extract_crossline(survey_id, crossline_number, sample_range)
+
+        if "error" in extraction_result:
+            return extraction_result
+
+        if extraction_result.get("note") == "Demo mode - simulated data":
+            return {
+                **extraction_result,
+                "visualization": "Image generation not available in demo mode"
+            }
+
+        try:
+            vds_handle = self._get_vds_handle(survey_id)
+            if not vds_handle:
+                return {"error": "Failed to open VDS file"}
+
+            layout = openvds.getLayout(vds_handle)
+            manager = openvds.getAccessManager(vds_handle)
+            survey = await self.get_survey_metadata(survey_id, include_stats=False)
+
+            # Convert crossline number to index
+            crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
+            crossline_index = int(crossline_axis.coordinateToSampleIndex(float(crossline_number)))
+
+            # Define sample range
+            if sample_range:
+                sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
+                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
+                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+            else:
+                sample_start_idx = 0
+                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_range = survey["sample_range"]
+
+            # Define voxel range
+            voxel_min = (sample_start_idx, crossline_index, 0)
+            voxel_max = (
+                sample_end_idx,
+                crossline_index + 1,
+                layout.getDimensionNumSamples(self.INLINE_DIM)
+            )
+
+            # Extract data
+            num_inlines = layout.getDimensionNumSamples(self.INLINE_DIM)
+            num_samples = sample_end_idx - sample_start_idx
+            buffer = np.empty((num_inlines, num_samples), dtype=np.float32)
+
+            request = manager.requestVolumeSubset(
+                data_out=buffer,
+                dimensionsND=openvds.DimensionsND.Dimensions_012,
+                min=voxel_min,
+                max=voxel_max,
+                lod=0,
+                channel=0
+            )
+            request.waitForCompletion()
+
+            # Generate visualization
+            visualizer = get_visualizer()
+            img_bytes = visualizer.create_crossline_image(
+                data=buffer,
+                crossline_number=crossline_number,
+                inline_range=tuple(survey["inline_range"]),
+                sample_range=tuple(sample_range),
+                colormap=colormap,
+                clip_percentile=clip_percentile
+            )
+
+            img_bytes = visualizer.compress_image(img_bytes, max_size_kb=800)
+
+            return {
+                **extraction_result,
+                "image_data": img_bytes,
+                "image_format": "PNG",
+                "image_size_kb": len(img_bytes) / 1024,
+                "colormap": colormap,
+                "clip_percentile": clip_percentile
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating crossline image: {e}")
+            return {"error": f"Image generation failed: {str(e)}"}
+
+    async def extract_timeslice_image(
+        self,
+        survey_id: str,
+        time_value: int,
+        inline_range: Optional[List[int]] = None,
+        crossline_range: Optional[List[int]] = None,
+        colormap: str = 'seismic',
+        clip_percentile: float = 99.0
+    ) -> Dict[str, Any]:
+        """
+        Extract time/depth slice and generate seismic image (map view)
+
+        Args:
+            survey_id: Survey identifier
+            time_value: Time/depth value to extract
+            inline_range: Optional [start, end] inline range
+            crossline_range: Optional [start, end] crossline range
+            colormap: 'seismic' (red-white-blue), 'gray', or 'petrel'
+            clip_percentile: Amplitude clipping percentile (default 99%)
+
+        Returns:
+            Dict with image_data (PNG bytes) and metadata
+        """
+        # Get survey metadata
+        survey = await self.get_survey_metadata(survey_id, include_stats=False)
+
+        if "error" in survey:
+            return survey
+
+        # Validate time value is in range
+        time_min, time_max = survey["sample_range"]
+        if not (time_min <= time_value <= time_max):
+            return {
+                "error": f"Time value {time_value} out of range [{time_min}, {time_max}]"
+            }
+
+        # If demo mode, return simulated response
+        if self.demo_mode or survey.get("file_path", "").startswith("demo://"):
+            return {
+                "survey_id": survey_id,
+                "extraction_type": "timeslice",
+                "time_value": time_value,
+                "inline_range": inline_range or survey["inline_range"],
+                "crossline_range": crossline_range or survey["crossline_range"],
+                "visualization": "Image generation not available in demo mode",
+                "note": "Demo mode - simulated data"
+            }
+
+        # REAL DATA EXTRACTION
+        try:
+            vds_handle = self._get_vds_handle(survey_id)
+            if not vds_handle:
+                return {"error": "Failed to open VDS file"}
+
+            layout = openvds.getLayout(vds_handle)
+            manager = openvds.getAccessManager(vds_handle)
+
+            # Convert time value to sample index
+            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
+            sample_index = int(sample_axis.coordinateToSampleIndex(float(time_value)))
+
+            # Define inline and crossline ranges
+            if inline_range:
+                inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
+                inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
+                inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1]))) + 1
+            else:
+                inline_start_idx = 0
+                inline_end_idx = layout.getDimensionNumSamples(self.INLINE_DIM)
+                inline_range = survey["inline_range"]
+
+            if crossline_range:
+                crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
+                crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
+                crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))) + 1
+            else:
+                crossline_start_idx = 0
+                crossline_end_idx = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+                crossline_range = survey["crossline_range"]
+
+            # Define voxel range for time slice (single sample plane)
+            voxel_min = (sample_index, crossline_start_idx, inline_start_idx)
+            voxel_max = (sample_index + 1, crossline_end_idx, inline_end_idx)
+
+            # Extract data
+            num_inlines = inline_end_idx - inline_start_idx
+            num_crosslines = crossline_end_idx - crossline_start_idx
+            buffer = np.empty((num_inlines, num_crosslines), dtype=np.float32)
+
+            request = manager.requestVolumeSubset(
+                data_out=buffer,
+                dimensionsND=openvds.DimensionsND.Dimensions_012,
+                min=voxel_min,
+                max=voxel_max,
+                lod=0,
+                channel=0
+            )
+            request.waitForCompletion()
+
+            # Generate visualization
+            visualizer = get_visualizer()
+            img_bytes = visualizer.create_timeslice_image(
+                data=buffer,
+                time_value=time_value,
+                inline_range=tuple(inline_range),
+                crossline_range=tuple(crossline_range),
+                colormap=colormap,
+                clip_percentile=clip_percentile
+            )
+
+            # More aggressive compression for timeslices (they tend to be larger)
+            img_bytes = visualizer.compress_image(img_bytes, max_size_kb=600)
+
+            # Calculate statistics
+            return {
+                "survey_id": survey_id,
+                "extraction_type": "timeslice",
+                "time_value": time_value,
+                "inline_range": inline_range,
+                "crossline_range": crossline_range,
+                "dimensions": {
+                    "inlines": num_inlines,
+                    "crosslines": num_crosslines
+                },
+                "statistics": {
+                    "amplitude_range": [float(buffer.min()), float(buffer.max())],
+                    "mean_amplitude": float(buffer.mean()),
+                    "std_amplitude": float(buffer.std())
+                },
+                "image_data": img_bytes,
+                "image_format": "PNG",
+                "image_size_kb": len(img_bytes) / 1024,
+                "colormap": colormap,
+                "clip_percentile": clip_percentile,
+                "note": "Real data extracted from VDS file"
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating timeslice image: {e}")
+            return {"error": f"Image generation failed: {str(e)}"}
+
     async def get_facets(
         self,
         filter_region: Optional[str] = None,
