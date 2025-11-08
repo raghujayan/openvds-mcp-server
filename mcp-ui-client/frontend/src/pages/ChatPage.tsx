@@ -7,6 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message, ChatMessage, ContentBlock, TextContent, ToolUseContent, ToolResultContent, ImageContent } from '../types/chat';
 import { sendMessage } from '../services/chatService';
+import { CollapsibleToolCall, CollapsibleImage } from '../components';
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -186,7 +187,7 @@ export default function ChatPage() {
       if (block.type === 'text') {
         const textBlock = block as TextContent;
         return (
-          <div key={index} className="prose prose-sm max-w-none">
+          <div key={index} className="prose prose-sm" style={{ maxWidth: 'none', marginLeft: 0, marginRight: 0 }}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {textBlock.text}
             </ReactMarkdown>
@@ -195,22 +196,22 @@ export default function ChatPage() {
       } else if (block.type === 'image') {
         const imageBlock = block as ImageContent;
         return (
-          <img
+          <CollapsibleImage
             key={index}
             src={`data:${imageBlock.source.media_type};base64,${imageBlock.source.data}`}
             alt="Seismic visualization"
-            className="max-w-full rounded-lg my-2"
+            title="Seismic Data Visualization"
           />
         );
       } else if (block.type === 'tool_use') {
         const toolBlock = block as ToolUseContent;
         return (
-          <div key={index} className="bg-blue-50 border border-blue-200 rounded-lg p-3 my-2">
-            <div className="text-sm font-medium text-blue-900">🔧 Using tool: {toolBlock.name}</div>
-            <pre className="text-xs text-blue-700 mt-1 overflow-x-auto">
-              {JSON.stringify(toolBlock.input, null, 2)}
-            </pre>
-          </div>
+          <CollapsibleToolCall
+            key={index}
+            name={toolBlock.name}
+            input={toolBlock.input}
+            status="completed"
+          />
         );
       } else if (block.type === 'tool_result') {
         const resultBlock = block as ToolResultContent;
@@ -218,30 +219,63 @@ export default function ChatPage() {
         // Check if content is an array of content blocks (could include images)
         if (Array.isArray(resultBlock.content)) {
           return (
-            <div key={index} className="bg-green-50 border border-green-200 rounded-lg p-3 my-2">
-              <div className="text-sm font-medium text-green-900">✓ Tool result</div>
+            <div key={index} style={{ margin: '8px 0' }}>
               {resultBlock.content.map((item: any, i: number) => {
                 if (item.type === 'image') {
                   return (
-                    <img
+                    <CollapsibleImage
                       key={i}
                       src={`data:${item.source?.media_type || 'image/jpeg'};base64,${item.source?.data}`}
                       alt="Tool result image"
-                      className="max-w-full rounded-lg my-2"
+                      title="Tool Result - Seismic Data"
                     />
                   );
                 } else if (item.type === 'text') {
                   return (
-                    <pre key={i} className="text-xs text-green-700 mt-1 overflow-x-auto max-h-40">
-                      {item.text?.slice(0, 500)}
-                      {item.text && item.text.length > 500 && '...'}
-                    </pre>
+                    <div key={i} style={{
+                      backgroundColor: '#3a4149',
+                      border: '1px solid rgba(206, 223, 231, 0.3)',
+                      borderRadius: '8px',
+                      padding: '12px',
+                      margin: '8px 0'
+                    }}>
+                      <div style={{ fontSize: '14px', fontWeight: 500, color: '#cedfe7' }}>✓ Tool result</div>
+                      <pre style={{
+                        fontSize: '11px',
+                        color: '#9ca3af',
+                        marginTop: '4px',
+                        overflowX: 'auto',
+                        maxHeight: '160px',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word'
+                      }}>
+                        {item.text?.slice(0, 500)}
+                        {item.text && item.text.length > 500 && '...'}
+                      </pre>
+                    </div>
                   );
                 } else {
                   return (
-                    <pre key={i} className="text-xs text-green-700 mt-1 overflow-x-auto max-h-40">
-                      {JSON.stringify(item, null, 2).slice(0, 500)}
-                    </pre>
+                    <div key={i} style={{
+                      backgroundColor: '#3a4149',
+                      border: '1px solid rgba(206, 223, 231, 0.3)',
+                      borderRadius: '8px',
+                      padding: '12px',
+                      margin: '8px 0'
+                    }}>
+                      <div style={{ fontSize: '14px', fontWeight: 500, color: '#cedfe7' }}>✓ Tool result</div>
+                      <pre style={{
+                        fontSize: '11px',
+                        color: '#9ca3af',
+                        marginTop: '4px',
+                        overflowX: 'auto',
+                        maxHeight: '160px',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word'
+                      }}>
+                        {JSON.stringify(item, null, 2).slice(0, 500)}
+                      </pre>
+                    </div>
                   );
                 }
               })}
@@ -251,9 +285,23 @@ export default function ChatPage() {
 
         // Original string/simple content handling
         return (
-          <div key={index} className="bg-green-50 border border-green-200 rounded-lg p-3 my-2">
-            <div className="text-sm font-medium text-green-900">✓ Tool result</div>
-            <pre className="text-xs text-green-700 mt-1 overflow-x-auto max-h-40">
+          <div key={index} style={{
+            backgroundColor: '#3a4149',
+            border: '1px solid rgba(206, 223, 231, 0.3)',
+            borderRadius: '8px',
+            padding: '12px',
+            margin: '8px 0'
+          }}>
+            <div style={{ fontSize: '14px', fontWeight: 500, color: '#cedfe7' }}>✓ Tool result</div>
+            <pre style={{
+              fontSize: '11px',
+              color: '#9ca3af',
+              marginTop: '4px',
+              overflowX: 'auto',
+              maxHeight: '160px',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word'
+            }}>
               {typeof resultBlock.content === 'string'
                 ? resultBlock.content.slice(0, 500)
                 : JSON.stringify(resultBlock.content, null, 2).slice(0, 500)}
@@ -267,34 +315,94 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <h1 className="text-2xl font-bold text-gray-900">VDS Copilot</h1>
-        <p className="text-sm text-gray-600">Your AI partner for seismic data exploration</p>
+    <div style={{
+      display: 'flex',
+      flexDirection: 'column',
+      width: '100%',
+      height: '100vh',
+      backgroundColor: '#2c323a',
+      overflow: 'hidden'
+    }}>
+      {/* Header - Bluware Dark Theme */}
+      <header
+        style={{
+          height: '64px',
+          backgroundColor: '#2c323a',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+          padding: '0 24px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexShrink: 0
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <img
+            src="/datahub-logo.png"
+            alt="Bluware DataHub"
+            className="object-contain"
+            style={{
+              width: '40px',
+              height: '40px',
+              filter: 'drop-shadow(1px 1px 2px rgba(0,0,0,0.5))'
+            }}
+          />
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            <h1 style={{ color: '#cedfe7', fontSize: '18px', fontWeight: 'bold', margin: 0 }}>VDS Copilot</h1>
+            <p style={{ color: '#9ca3af', fontSize: '10px', margin: 0 }}>AI-Powered Seismic Data Exploration</p>
+          </div>
+        </div>
       </header>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-4">
-        <div className="max-w-4xl mx-auto space-y-4">
+      <div style={{
+        flex: 1,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        padding: '16px 24px'
+      }}>
+        <div style={{ maxWidth: '896px', margin: '0 auto' }}>
           {messages.map((message) => (
             <div
               key={message.id}
-              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              style={{
+                display: 'flex',
+                justifyContent: message.role === 'user' ? 'flex-end' : 'flex-start',
+                marginBottom: '16px'
+              }}
             >
               <div
-                className={`max-w-3xl rounded-lg px-4 py-3 ${
-                  message.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white border border-gray-200 text-gray-900'
-                }`}
+                style={{
+                  maxWidth: '768px',
+                  borderRadius: '8px',
+                  padding: '12px 16px',
+                  ...(message.role === 'user'
+                    ? {
+                        backgroundColor: '#1976d2',
+                        color: '#fff'
+                      }
+                    : {
+                        backgroundColor: '#3a4149',
+                        border: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: '#f4f4f4'
+                      })
+                }}
               >
                 {renderContent(message.content)}
                 {message.usage && (
-                  <div className="text-xs text-gray-500 mt-3 pt-2 border-t border-gray-200 flex justify-between items-center">
+                  <div style={{
+                    fontSize: '11px',
+                    marginTop: '12px',
+                    paddingTop: '8px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+                    color: '#9ca3af'
+                  }}>
                     <span>Tokens: {message.usage.input_tokens} in / {message.usage.output_tokens} out</span>
                     {message.usage.time_taken && (
-                      <span className="font-medium text-gray-700">
+                      <span style={{ fontWeight: 500, color: '#cedfe7' }}>
                         ⏱️ {message.usage.time_taken.toFixed(2)}s
                       </span>
                     )}
@@ -306,15 +414,42 @@ export default function ChatPage() {
 
           {/* Loading indicator with elapsed time */}
           {isLoading && !currentResponse && (
-            <div className="flex justify-start">
-              <div className="max-w-3xl rounded-lg px-6 py-4 bg-white border border-gray-200 text-gray-900">
-                <div className="flex items-center space-x-3">
-                  <div className="flex space-x-1">
-                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+            <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '16px' }}>
+              <div style={{
+                maxWidth: '768px',
+                borderRadius: '8px',
+                padding: '16px 24px',
+                backgroundColor: '#3a4149',
+                border: '1px solid rgba(255, 255, 255, 0.1)'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <div style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: '#cedfe7',
+                      animation: 'bounce 1s infinite',
+                      animationDelay: '0ms'
+                    }}></div>
+                    <div style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: '#cedfe7',
+                      animation: 'bounce 1s infinite',
+                      animationDelay: '150ms'
+                    }}></div>
+                    <div style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      backgroundColor: '#cedfe7',
+                      animation: 'bounce 1s infinite',
+                      animationDelay: '300ms'
+                    }}></div>
                   </div>
-                  <span className="text-sm text-gray-600 font-medium">
+                  <span style={{ fontSize: '14px', fontWeight: 500, color: '#9ca3af' }}>
                     VDS Copilot is thinking... {(elapsedTime / 1000).toFixed(1)}s
                   </span>
                 </div>
@@ -324,11 +459,19 @@ export default function ChatPage() {
 
           {/* Tool execution status */}
           {toolCalls.length > 0 && (
-            <div className="flex justify-start">
-              <div className="max-w-3xl rounded-lg px-4 py-3 bg-yellow-50 border border-yellow-200">
-                <div className="text-sm font-medium text-yellow-900 mb-2">Executing tools...</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '16px' }}>
+              <div style={{
+                maxWidth: '768px',
+                borderRadius: '8px',
+                padding: '12px 16px',
+                backgroundColor: '#3a4149',
+                border: '1px solid rgba(206, 223, 231, 0.3)'
+              }}>
+                <div style={{ fontSize: '14px', fontWeight: 500, marginBottom: '8px', color: '#cedfe7' }}>
+                  Executing tools...
+                </div>
                 {toolCalls.map((tc, i) => (
-                  <div key={i} className="text-xs text-yellow-700">
+                  <div key={i} style={{ fontSize: '12px', color: '#9ca3af' }}>
                     {tc.status === 'executing' && '⏳ '}
                     {tc.status === 'completed' && '✓ '}
                     {tc.status === 'error' && '❌ '}
@@ -344,27 +487,66 @@ export default function ChatPage() {
       </div>
 
       {/* Input */}
-      <div className="bg-white border-t border-gray-200 px-6 py-4">
-        <div className="max-w-4xl mx-auto">
-          <div className="flex gap-2">
+      <div style={{
+        backgroundColor: '#2c323a',
+        borderTop: '1px solid rgba(255, 255, 255, 0.1)',
+        padding: '16px 24px',
+        flexShrink: 0
+      }}>
+        <div style={{ maxWidth: '1024px', margin: '0 auto', width: '100%' }}>
+          <div style={{ display: 'flex', gap: '8px' }}>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={handleKeyPress}
               placeholder="Ask about seismic data... (Press Enter to send, Shift+Enter for new line)"
-              className="flex-1 rounded-lg border border-gray-300 px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              style={{
+                flex: 1,
+                borderRadius: '8px',
+                padding: '12px 16px',
+                backgroundColor: '#3a4149',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                color: '#f4f4f4',
+                fontSize: '14px',
+                resize: 'none',
+                outline: 'none',
+                fontFamily: 'inherit'
+              }}
+              onFocus={(e) => e.currentTarget.style.borderColor = '#cedfe7'}
+              onBlur={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)'}
               rows={3}
               disabled={isLoading}
             />
             <button
               onClick={handleSend}
               disabled={isLoading || !input.trim()}
-              className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed font-medium"
+              style={{
+                padding: '12px 24px',
+                backgroundColor: isLoading || !input.trim() ? '#6b7280' : '#1976d2',
+                color: '#fff',
+                borderRadius: '8px',
+                border: 'none',
+                fontWeight: 500,
+                fontSize: '14px',
+                cursor: isLoading || !input.trim() ? 'not-allowed' : 'pointer',
+                transition: 'background-color 0.2s',
+                whiteSpace: 'nowrap'
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading && input.trim()) {
+                  e.currentTarget.style.backgroundColor = '#1565c0';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isLoading && input.trim()) {
+                  e.currentTarget.style.backgroundColor = '#1976d2';
+                }
+              }}
             >
               {isLoading ? 'Sending...' : 'Send'}
             </button>
           </div>
-          <div className="text-xs text-gray-500 mt-2">
+          <div style={{ fontSize: '12px', marginTop: '8px', color: '#9ca3af' }}>
             Try: "Show me inline 55000 from the Sepia survey" or "What surveys are available?"
           </div>
         </div>
