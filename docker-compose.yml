@@ -5,7 +5,7 @@ services:
     image: openvds-mcp-server
     container_name: openvds-mcp-server
     volumes:
-      - /Users/raghu/vds-data:/vds-data:ro
+      - /Volumes/Hue/Datasets/VDS:/vds-data:ro
     environment:
       - VDS_DATA_PATH=/vds-data
       - LOG_LEVEL=INFO
