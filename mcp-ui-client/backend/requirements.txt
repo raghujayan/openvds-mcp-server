@@ -1,0 +1,28 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+aiofiles>=23.2.0
+websockets>=12.0
+python-dotenv>=1.0.0
+httpx>=0.25.0
+
+# MCP SDK
+mcp>=0.9.0
+
+# Claude API
+anthropic>=0.40.0
+
+# Database
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
+
+# Server-Sent Events
+sse-starlette>=1.6.0
+
+# MCP Server dependencies (needed to run openvds-mcp-server)
+numpy>=1.24.0
+matplotlib>=3.7.0
+elasticsearch>=8.11.0,<9.0
+aiohttp>=3.9.0
+Pillow>=10.1.0

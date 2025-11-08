@@ -42,9 +42,11 @@ def detect_image_format(img_bytes: bytes) -> str:
 try:
     from .vds_client import VDSClient
     from .agent_manager import SeismicAgentManager
+    from .data_integrity import get_integrity_agent
 except ImportError:
     from vds_client import VDSClient
     from agent_manager import SeismicAgentManager
+    from data_integrity import get_integrity_agent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openvds-mcp-server")
@@ -505,6 +507,135 @@ class OpenVDSMCPServer:
                             }
                         }
                     }
+                ),
+                # Data Integrity / Validation Tools
+                Tool(
+                    name="validate_extracted_statistics",
+                    description="""⚠️ CRITICAL - Use this to validate claimed statistics against actual data.
+
+This prevents hallucinations by re-computing statistics from raw data and comparing to claims.
+
+WHEN TO USE:
+✅ After extracting data and making statistical claims
+✅ To verify any numeric claim about seismic data (max amplitude, mean, std, etc.)
+✅ Before reporting statistics to users
+
+IMPORTANT:
+- All statistics are re-computed from raw data (not estimated)
+- Default tolerance: ±5% (configurable)
+- Returns PASS/FAIL for each claim with actual values
+- If validation FAILS, use the corrected values provided
+
+Example:
+  Claimed: max amplitude = 2500
+  Agent validates: max = 2487.3 (within 5% tolerance) → PASS
+
+  Claimed: mean amplitude = 145
+  Agent validates: mean = 12.4 (error too large) → FAIL
+  Correction: "Mean amplitude is 12.4 (not 145)"
+""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "section_type": {
+                                "type": "string",
+                                "description": "Type of section: 'inline', 'crossline', or 'timeslice'",
+                                "enum": ["inline", "crossline", "timeslice"]
+                            },
+                            "section_number": {
+                                "type": "integer",
+                                "description": "Section number (inline number, crossline number, or time value)"
+                            },
+                            "claimed_statistics": {
+                                "type": "object",
+                                "description": "Statistics to validate (e.g., {'max': 2500, 'mean': 145, 'std': 490})",
+                                "additionalProperties": {"type": "number"}
+                            },
+                            "tolerance": {
+                                "type": "number",
+                                "description": "Tolerance as decimal (default 0.05 = 5%)",
+                                "default": 0.05,
+                                "minimum": 0.0,
+                                "maximum": 1.0
+                            }
+                        },
+                        "required": ["survey_id", "section_type", "section_number", "claimed_statistics"]
+                    }
+                ),
+                Tool(
+                    name="verify_spatial_coordinates",
+                    description="""Verify spatial coordinates are within survey bounds.
+
+Prevents hallucinations about feature locations by checking against actual survey dimensions.
+
+WHEN TO USE:
+✅ When claiming a feature is at specific inline/crossline/sample coordinates
+✅ To verify locations before reporting to users
+✅ When analyzing spatial patterns
+
+Example:
+  Claimed: "Fault at inline 55000, crossline 8250"
+  Agent checks: Both are within survey bounds → VALID
+
+  Claimed: "Feature at inline 60000"
+  Agent checks: Survey ends at 59001 → OUT_OF_BOUNDS (corrects the user)
+""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "claimed_location": {
+                                "type": "object",
+                                "description": "Location to verify (e.g., {'inline': 55000, 'crossline': 8250, 'sample': 6200})",
+                                "properties": {
+                                    "inline": {"type": "integer"},
+                                    "crossline": {"type": "integer"},
+                                    "sample": {"type": "integer"}
+                                }
+                            }
+                        },
+                        "required": ["survey_id", "claimed_location"]
+                    }
+                ),
+                Tool(
+                    name="check_statistical_consistency",
+                    description="""Check if reported statistics are internally consistent.
+
+Catches mathematically impossible combinations (e.g., mean > max, percentiles out of order).
+
+WHEN TO USE:
+✅ Before reporting a set of statistics to verify they make sense
+✅ To catch computation errors or data quality issues
+✅ As a sanity check on any statistical summary
+
+Example checks:
+- min ≤ mean ≤ max
+- p10 ≤ p25 ≤ p50 ≤ p75 ≤ p90 (monotonically increasing)
+- std ≥ 0
+- RMS ≥ |mean| (approximately)
+
+Example:
+  Statistics: {min: 100, max: 500, mean: 600}
+  Agent: FAIL - "Mean (600) cannot be greater than max (500)"
+""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "statistics": {
+                                "type": "object",
+                                "description": "Statistics to check for consistency",
+                                "additionalProperties": {"type": "number"}
+                            }
+                        },
+                        "required": ["statistics"]
+                    }
                 )
             ]
         
@@ -777,6 +908,101 @@ class OpenVDSMCPServer:
                     result = self.agent_manager.get_results(
                         arguments.get("session_id")
                     )
+
+                # Data Integrity / Validation Tools
+                elif name == "validate_extracted_statistics":
+                    # Extract the data to validate
+                    survey_id = arguments["survey_id"]
+                    section_type = arguments["section_type"]
+                    section_number = arguments["section_number"]
+                    claimed_statistics = arguments["claimed_statistics"]
+                    tolerance = arguments.get("tolerance", 0.05)
+
+                    # Extract raw data based on section type with return_data=True
+                    if section_type == "inline":
+                        extraction_result = await self.vds_client.extract_inline(
+                            survey_id, section_number, return_data=True
+                        )
+                    elif section_type == "crossline":
+                        extraction_result = await self.vds_client.extract_crossline(
+                            survey_id, section_number, return_data=True
+                        )
+                    elif section_type == "timeslice":
+                        extraction_result = await self.vds_client.extract_timeslice(
+                            survey_id, section_number, return_data=True
+                        )
+                    else:
+                        result = {"error": f"Unknown section type: {section_type}"}
+                        return [TextContent(type="text", text=json.dumps(result))]
+
+                    # Check for extraction errors
+                    if "error" in extraction_result:
+                        return [TextContent(type="text", text=json.dumps(extraction_result))]
+
+                    # Get the raw data array
+                    import numpy as np
+                    data_array = np.array(extraction_result["data"])
+
+                    # Validate statistics
+                    integrity_agent = get_integrity_agent(tolerance=tolerance)
+                    result = integrity_agent.validate_statistics(
+                        data_array,
+                        claimed_statistics,
+                        tolerance
+                    )
+
+                    # Add context
+                    result["validation_context"] = {
+                        "survey_id": survey_id,
+                        "section_type": section_type,
+                        "section_number": section_number,
+                        "data_shape": list(data_array.shape)
+                    }
+
+                elif name == "verify_spatial_coordinates":
+                    survey_id = arguments["survey_id"]
+                    claimed_location = arguments["claimed_location"]
+
+                    # Get survey metadata to check bounds
+                    survey_metadata = await self.vds_client.get_survey_metadata(
+                        survey_id, include_stats=True
+                    )
+
+                    # Extract survey bounds from metadata
+                    survey_bounds = {
+                        "inline_range": (
+                            survey_metadata["dimensions"]["inline_min"],
+                            survey_metadata["dimensions"]["inline_max"]
+                        ),
+                        "crossline_range": (
+                            survey_metadata["dimensions"]["crossline_min"],
+                            survey_metadata["dimensions"]["crossline_max"]
+                        ),
+                        "sample_range": (
+                            survey_metadata["dimensions"]["sample_min"],
+                            survey_metadata["dimensions"]["sample_max"]
+                        )
+                    }
+
+                    # Verify coordinates
+                    integrity_agent = get_integrity_agent()
+                    result = integrity_agent.verify_coordinates(
+                        claimed_location,
+                        survey_bounds
+                    )
+
+                    # Add context
+                    result["verification_context"] = {
+                        "survey_id": survey_id,
+                        "survey_name": survey_metadata.get("name", "Unknown")
+                    }
+
+                elif name == "check_statistical_consistency":
+                    statistics = arguments["statistics"]
+
+                    # Check consistency
+                    integrity_agent = get_integrity_agent()
+                    result = integrity_agent.check_statistical_consistency(statistics)
 
                 else:
                     result = {"error": f"Unknown tool: {name}"}

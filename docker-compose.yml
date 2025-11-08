@@ -5,23 +5,18 @@ services:
     image: openvds-mcp-server
     container_name: openvds-mcp-server
     volumes:
-      - /Volumes/Hue/Datasets/VDS:/vds-data:ro
+      - /Users/raghu/vds-data:/vds-data:ro
     environment:
       - VDS_DATA_PATH=/vds-data
       - LOG_LEVEL=INFO
-      # Elasticsearch configuration - using SHARED instance
+      # Elasticsearch configuration - use host.docker.internal to access host
       - ES_ENABLED=true
-      - ES_URL=http://vds-shared-elasticsearch:9200
+      - ES_URL=http://host.docker.internal:9200
       - ES_INDEX=vds-metadata
       # Mount health checking
       - MOUNT_HEALTH_CHECK_ENABLED=true
       - MOUNT_HEALTH_CHECK_TIMEOUT=10
       - MOUNT_HEALTH_CHECK_RETRIES=3
-    networks:
-      - vds-shared-network
+      # License for OpenVDS
+      - HUE_LICENSE_FILE=5053@license.cloud.bluware.com
     command: python3 src/openvds_mcp_server.py
-
-networks:
-  vds-shared-network:
-    external: true
-    name: vds-shared-network

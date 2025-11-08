@@ -26,6 +26,7 @@ from mount_health import MountHealthChecker, MountHealthStatus
 from es_metadata_client import ESMetadataClient
 from query_cache import get_cache
 from seismic_viz import get_visualizer
+from data_integrity import get_integrity_agent
 
 logger = logging.getLogger("vds-client")
 
@@ -44,6 +45,9 @@ class VDSClient:
         self.vds_handles: Dict[str, Any] = {}  # Cache of open VDS handles
         self.demo_mode = False
 
+        # Path configuration for translating ES paths to host paths
+        self.vds_data_path = os.getenv("VDS_DATA_PATH", "").split(":")[0]  # Get first path
+
         # Mount health checking
         self.mount_health_enabled = os.getenv("MOUNT_HEALTH_CHECK_ENABLED", "true").lower() == "true"
         self.mount_health_checker = MountHealthChecker(
@@ -59,7 +63,37 @@ class VDSClient:
 
         # Query cache for performance
         self.cache = get_cache()
-        
+
+    def _translate_path(self, es_path: str) -> str:
+        """
+        Translate Elasticsearch path to actual host path
+
+        ES paths are stored as /vds-data/... (Docker mount path)
+        Host paths are /Users/raghu/vds-data/... (actual location)
+
+        Args:
+            es_path: Path from Elasticsearch metadata
+
+        Returns:
+            Translated path that exists on the host filesystem
+        """
+        if not es_path:
+            return es_path
+
+        # If path starts with /vds-data/, replace with actual VDS_DATA_PATH
+        if es_path.startswith("/vds-data/"):
+            if self.vds_data_path:
+                # Replace /vds-data/ with the configured path
+                translated = es_path.replace("/vds-data/", self.vds_data_path.rstrip("/") + "/", 1)
+                logger.debug(f"Path translation: {es_path} -> {translated}")
+                return translated
+            else:
+                logger.warning(f"VDS_DATA_PATH not configured, cannot translate: {es_path}")
+                return es_path
+
+        # Path doesn't need translation
+        return es_path
+
     async def initialize(self):
         """
         Initialize the VDS client with mount health checking and Elasticsearch
@@ -357,18 +391,23 @@ class VDSClient:
         """Get or open a VDS handle for the survey"""
         if survey_id in self.vds_handles:
             return self.vds_handles[survey_id]
-        
+
         # Find survey and open it
         survey = next((s for s in self.available_surveys if s["id"] == survey_id), None)
         if not survey or survey.get("file_path", "").startswith("demo://"):
             return None
-        
+
         try:
-            vds_handle = openvds.open(survey["file_path"])
+            # Translate ES path to host path
+            file_path = self._translate_path(survey["file_path"])
+            logger.info(f"Opening VDS file: {file_path}")
+            vds_handle = openvds.open(file_path)
             self.vds_handles[survey_id] = vds_handle
             return vds_handle
         except Exception as e:
             logger.error(f"Failed to open VDS file for {survey_id}: {e}")
+            logger.error(f"  Original path: {survey.get('file_path')}")
+            logger.error(f"  Translated path: {file_path if 'file_path' in locals() else 'N/A'}")
             return None
     
     async def search_surveys(
@@ -629,9 +668,18 @@ class VDSClient:
         self,
         survey_id: str,
         inline_number: int,
-        sample_range: Optional[List[int]] = None
+        sample_range: Optional[List[int]] = None,
+        return_data: bool = False
     ) -> Dict[str, Any]:
-        """Extract an inline slice from a survey using REAL OpenVDS data access"""
+        """
+        Extract an inline slice from a survey using REAL OpenVDS data access
+
+        Args:
+            survey_id: Survey identifier
+            inline_number: Inline number to extract
+            sample_range: Optional [start, end] sample range
+            return_data: If True, include raw data array in response (for validation)
+        """
         survey = await self.get_survey_metadata(survey_id, include_stats=False)
         
         if "error" in survey:
@@ -716,7 +764,7 @@ class VDSClient:
             request.waitForCompletion()
             
             # Calculate statistics from real data
-            return {
+            result = {
                 "survey_id": survey_id,
                 "extraction_type": "inline",
                 "inline_number": inline_number,
@@ -735,6 +783,29 @@ class VDSClient:
                 },
                 "note": "Real data extracted from VDS file"
             }
+
+            # Optionally include raw data and provenance for validation
+            if return_data:
+                result["data"] = buffer.tolist()  # Convert to list for JSON serialization
+
+                # Add provenance tracking
+                integrity_agent = get_integrity_agent()
+                source_info = {
+                    "vds_file": survey.get("file_path", "unknown"),
+                    "survey_id": survey_id,
+                    "survey_name": survey.get("name", "unknown")
+                }
+                extraction_params = {
+                    "section_type": "inline",
+                    "section_number": inline_number,
+                    "sample_range": result["sample_range"],
+                    "crossline_range": result["crossline_range"]
+                }
+                result["provenance"] = integrity_agent.create_provenance_record(
+                    buffer, source_info, extraction_params
+                )
+
+            return result
             
         except Exception as e:
             logger.error(f"Error extracting inline: {e}")
@@ -744,9 +815,18 @@ class VDSClient:
         self,
         survey_id: str,
         crossline_number: int,
-        sample_range: Optional[List[int]] = None
+        sample_range: Optional[List[int]] = None,
+        return_data: bool = False
     ) -> Dict[str, Any]:
-        """Extract a crossline slice from a survey using REAL OpenVDS data access"""
+        """
+        Extract a crossline slice from a survey using REAL OpenVDS data access
+
+        Args:
+            survey_id: Survey identifier
+            crossline_number: Crossline number to extract
+            sample_range: Optional [start, end] sample range
+            return_data: If True, include raw data array in response (for validation)
+        """
         survey = await self.get_survey_metadata(survey_id, include_stats=False)
         
         if "error" in survey:
@@ -831,7 +911,7 @@ class VDSClient:
             request.waitForCompletion()
             
             # Calculate statistics from real data
-            return {
+            result = {
                 "survey_id": survey_id,
                 "extraction_type": "crossline",
                 "crossline_number": crossline_number,
@@ -850,6 +930,29 @@ class VDSClient:
                 },
                 "note": "Real data extracted from VDS file"
             }
+
+            # Optionally include raw data and provenance for validation
+            if return_data:
+                result["data"] = buffer.tolist()  # Convert to list for JSON serialization
+
+                # Add provenance tracking
+                integrity_agent = get_integrity_agent()
+                source_info = {
+                    "vds_file": survey.get("file_path", "unknown"),
+                    "survey_id": survey_id,
+                    "survey_name": survey.get("name", "unknown")
+                }
+                extraction_params = {
+                    "section_type": "crossline",
+                    "section_number": crossline_number,
+                    "sample_range": result["sample_range"],
+                    "inline_range": result["inline_range"]
+                }
+                result["provenance"] = integrity_agent.create_provenance_record(
+                    buffer, source_info, extraction_params
+                )
+
+            return result
             
         except Exception as e:
             logger.error(f"Error extracting crossline: {e}")
@@ -1183,6 +1286,144 @@ class VDSClient:
         except Exception as e:
             logger.error(f"Error generating crossline image: {e}")
             return {"error": f"Image generation failed: {str(e)}"}
+
+    async def extract_timeslice(
+        self,
+        survey_id: str,
+        time_value: int,
+        inline_range: Optional[List[int]] = None,
+        crossline_range: Optional[List[int]] = None,
+        return_data: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Extract a time/depth slice from a survey
+
+        Args:
+            survey_id: Survey identifier
+            time_value: Time/depth value to extract
+            inline_range: Optional [start, end] inline range
+            crossline_range: Optional [start, end] crossline range
+            return_data: If True, include raw data array in response (for validation)
+        """
+        survey = await self.get_survey_metadata(survey_id, include_stats=False)
+
+        if "error" in survey:
+            return survey
+
+        # Validate time value
+        time_min, time_max = survey["sample_range"]
+        if not (time_min <= time_value <= time_max):
+            return {
+                "error": f"Time value {time_value} out of range [{time_min}, {time_max}]"
+            }
+
+        # If demo mode, return simulated response
+        if self.demo_mode or survey.get("file_path", "").startswith("demo://"):
+            return {
+                "survey_id": survey_id,
+                "extraction_type": "timeslice",
+                "time_value": time_value,
+                "inline_range": inline_range or survey["inline_range"],
+                "crossline_range": crossline_range or survey["crossline_range"],
+                "note": "Demo mode - simulated data"
+            }
+
+        # REAL DATA EXTRACTION
+        try:
+            vds_handle = self._get_vds_handle(survey_id)
+            if not vds_handle:
+                return {"error": "Failed to open VDS file"}
+
+            layout = openvds.getLayout(vds_handle)
+            manager = openvds.getAccessManager(vds_handle)
+
+            # Convert time value to sample index
+            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
+            sample_index = int(sample_axis.coordinateToSampleIndex(float(time_value)))
+
+            # Define inline and crossline ranges
+            if inline_range:
+                inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
+                inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
+                inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1]))) + 1
+            else:
+                inline_start_idx = 0
+                inline_end_idx = layout.getDimensionNumSamples(self.INLINE_DIM)
+                inline_range = survey["inline_range"]
+
+            if crossline_range:
+                crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
+                crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
+                crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))) + 1
+            else:
+                crossline_start_idx = 0
+                crossline_end_idx = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+                crossline_range = survey["crossline_range"]
+
+            # Define voxel range
+            voxel_min = (sample_index, crossline_start_idx, inline_start_idx)
+            voxel_max = (sample_index + 1, crossline_end_idx, inline_end_idx)
+
+            # Extract data
+            num_inlines = inline_end_idx - inline_start_idx
+            num_crosslines = crossline_end_idx - crossline_start_idx
+            buffer = np.empty((num_inlines, num_crosslines), dtype=np.float32)
+
+            request = manager.requestVolumeSubset(
+                data_out=buffer,
+                dimensionsND=openvds.DimensionsND.Dimensions_012,
+                min=voxel_min,
+                max=voxel_max,
+                lod=0,
+                channel=0
+            )
+            request.waitForCompletion()
+
+            # Calculate statistics
+            result = {
+                "survey_id": survey_id,
+                "extraction_type": "timeslice",
+                "time_value": time_value,
+                "inline_range": list(inline_range),
+                "crossline_range": list(crossline_range),
+                "dimensions": {
+                    "inlines": num_inlines,
+                    "crosslines": num_crosslines
+                },
+                "data_summary": {
+                    "amplitude_range": [float(buffer.min()), float(buffer.max())],
+                    "mean_amplitude": float(buffer.mean()),
+                    "std_amplitude": float(buffer.std())
+                },
+                "note": "Real data extracted from VDS file"
+            }
+
+            # Optionally include raw data and provenance for validation
+            if return_data:
+                result["data"] = buffer.tolist()
+
+                # Add provenance tracking
+                integrity_agent = get_integrity_agent()
+                source_info = {
+                    "vds_file": survey.get("file_path", "unknown"),
+                    "survey_id": survey_id,
+                    "survey_name": survey.get("name", "unknown")
+                }
+                extraction_params = {
+                    "section_type": "timeslice",
+                    "section_number": time_value,
+                    "inline_range": result["inline_range"],
+                    "crossline_range": result["crossline_range"]
+                }
+                result["provenance"] = integrity_agent.create_provenance_record(
+                    buffer, source_info, extraction_params
+                )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error extracting timeslice: {e}")
+            return {"error": f"Data extraction failed: {str(e)}"}
 
     async def extract_timeslice_image(
         self,

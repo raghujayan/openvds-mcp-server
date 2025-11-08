@@ -12,5 +12,6 @@ for i in {1..30}; do
     sleep 1
 done
 
-# Run the MCP server
-exec docker-compose run --rm --no-TTY openvds-mcp python3 src/openvds_mcp_server.py
+# Run the MCP server with stdio for MCP protocol
+# Use --no-deps to avoid starting other services (like Elasticsearch)
+exec docker-compose run --rm --no-TTY --no-deps openvds-mcp python3 src/openvds_mcp_server.py

@@ -1,0 +1,40 @@
+services:
+  # Backend FastAPI service
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_SERVER_PATH=/app/openvds-mcp-server/src/openvds_mcp_server.py
+      - MCP_SERVER_ARGS=
+      - CORS_ORIGINS=http://localhost:3000
+    volumes:
+      - ../src:/app/openvds-mcp-server/src:ro
+      - /Volumes/Hue/Datasets/VDS:/vds-data:ro
+    networks:
+      - vds-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend React service
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - vds-network
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+
+networks:
+  vds-network:
+    driver: bridge
