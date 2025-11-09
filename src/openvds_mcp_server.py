@@ -391,7 +391,7 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                             "send_to_claude": {
                                 "type": "boolean",
                                 "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
-                                "default": false
+                                "default": False
                             }
                         },
                         "required": ["survey_id", "inline_number"]
@@ -456,7 +456,7 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                             "send_to_claude": {
                                 "type": "boolean",
                                 "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
-                                "default": false
+                                "default": False
                             }
                         },
                         "required": ["survey_id", "crossline_number"]
@@ -525,7 +525,7 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                             "send_to_claude": {
                                 "type": "boolean",
                                 "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
-                                "default": false
+                                "default": False
                             }
                         },
                         "required": ["survey_id", "time_value"]
