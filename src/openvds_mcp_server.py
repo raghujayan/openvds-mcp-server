@@ -316,7 +316,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_inline_image",
-                    description="⚠️ SINGLE INLINE ONLY ⚠️ Extract ONE inline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE inline. If the user wants multiple inlines, ranges (e.g. '51000 to 59000'), patterns (e.g. 'every 100th'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.",
+                    description="⚠️ SINGLE INLINE ONLY ⚠️ Extract ONE inline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE inline. If the user wants multiple inlines, ranges (e.g. '51000 to 59000'), patterns (e.g. 'every 100th'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent. PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -347,6 +347,11 @@ class OpenVDSMCPServer:
                                 "default": 99.0,
                                 "minimum": 90.0,
                                 "maximum": 100.0
+                            },
+                            "send_to_claude": {
+                                "type": "boolean",
+                                "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
+                                "default": false
                             }
                         },
                         "required": ["survey_id", "inline_number"]
@@ -354,7 +359,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_crossline_image",
-                    description="⚠️ SINGLE CROSSLINE ONLY ⚠️ Extract ONE crossline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE crossline. If the user wants multiple crosslines, ranges, patterns (e.g. 'every Nth', 'skipping 100'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.",
+                    description="⚠️ SINGLE CROSSLINE ONLY ⚠️ Extract ONE crossline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE crossline. If the user wants multiple crosslines, ranges, patterns (e.g. 'every Nth', 'skipping 100'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent. PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -385,6 +390,11 @@ class OpenVDSMCPServer:
                                 "default": 99.0,
                                 "minimum": 90.0,
                                 "maximum": 100.0
+                            },
+                            "send_to_claude": {
+                                "type": "boolean",
+                                "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
+                                "default": false
                             }
                         },
                         "required": ["survey_id", "crossline_number"]
@@ -392,7 +402,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_timeslice_image",
-                    description="Extract a time/depth slice (map view) and generate a seismic image visualization. Returns PNG image showing amplitude distribution across the survey area at a specific time/depth.",
+                    description="Extract a time/depth slice (map view) and generate a seismic image visualization. Returns PNG image showing amplitude distribution across the survey area at a specific time/depth. PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -430,6 +440,11 @@ class OpenVDSMCPServer:
                                 "default": 99.0,
                                 "minimum": 90.0,
                                 "maximum": 100.0
+                            },
+                            "send_to_claude": {
+                                "type": "boolean",
+                                "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
+                                "default": false
                             }
                         },
                         "required": ["survey_id", "time_value"]
@@ -790,11 +805,11 @@ Example:
                         arguments.get("colormap", "seismic"),
                         arguments.get("clip_percentile", 99.0)
                     )
+
+                    # Check privacy consent
+                    send_to_claude = arguments.get("send_to_claude", False)
+
                     if "image_data" in result:
-                        # Return image as ImageContent along with metadata as TextContent
-                        img_bytes = result["image_data"]
-                        img_format = detect_image_format(img_bytes)
-                        img_base64 = base64.b64encode(img_bytes).decode()
                         # Use data_summary or statistics depending on which exists
                         stats = result.get("statistics") or result.get("data_summary", {})
                         metadata = {
@@ -803,19 +818,36 @@ Example:
                             "statistics": stats,
                             "colormap": result["colormap"],
                             "image_size_kb": result["image_size_kb"],
-                            "image_format": img_format
+                            "image_format": result.get("image_format", "PNG")
                         }
-                        return [
-                            ImageContent(
-                                type="image",
-                                data=img_base64,
-                                mimeType=img_format
-                            ),
-                            TextContent(
+
+                        if send_to_claude:
+                            # User consented - send image to Claude
+                            img_bytes = result["image_data"]
+                            img_format = detect_image_format(img_bytes)
+                            img_base64 = base64.b64encode(img_bytes).decode()
+                            metadata["privacy_notice"] = "✅ Image sent to Anthropic/Claude with user consent"
+
+                            return [
+                                ImageContent(
+                                    type="image",
+                                    data=img_base64,
+                                    mimeType=img_format
+                                ),
+                                TextContent(
+                                    type="text",
+                                    text=json.dumps(metadata, indent=2)
+                                )
+                            ]
+                        else:
+                            # Privacy mode - metadata only, no image sent to Anthropic
+                            metadata["privacy_notice"] = "🔒 Image kept local - NOT sent to Anthropic (send_to_claude=false)"
+                            metadata["note"] = "To view this image in Claude, user must explicitly set send_to_claude=true"
+
+                            return [TextContent(
                                 type="text",
                                 text=json.dumps(metadata, indent=2)
-                            )
-                        ]
+                            )]
                     else:
                         # Error case - return text
                         return [TextContent(
@@ -831,11 +863,11 @@ Example:
                         arguments.get("colormap", "seismic"),
                         arguments.get("clip_percentile", 99.0)
                     )
+
+                    # Check privacy consent
+                    send_to_claude = arguments.get("send_to_claude", False)
+
                     if "image_data" in result:
-                        # Return image as ImageContent along with metadata as TextContent
-                        img_bytes = result["image_data"]
-                        img_format = detect_image_format(img_bytes)
-                        img_base64 = base64.b64encode(img_bytes).decode()
                         # Use data_summary or statistics depending on which exists
                         stats = result.get("statistics") or result.get("data_summary", {})
                         metadata = {
@@ -844,19 +876,36 @@ Example:
                             "statistics": stats,
                             "colormap": result["colormap"],
                             "image_size_kb": result["image_size_kb"],
-                            "image_format": img_format
+                            "image_format": result.get("image_format", "PNG")
                         }
-                        return [
-                            ImageContent(
-                                type="image",
-                                data=img_base64,
-                                mimeType=img_format
-                            ),
-                            TextContent(
+
+                        if send_to_claude:
+                            # User consented - send image to Claude
+                            img_bytes = result["image_data"]
+                            img_format = detect_image_format(img_bytes)
+                            img_base64 = base64.b64encode(img_bytes).decode()
+                            metadata["privacy_notice"] = "✅ Image sent to Anthropic/Claude with user consent"
+
+                            return [
+                                ImageContent(
+                                    type="image",
+                                    data=img_base64,
+                                    mimeType=img_format
+                                ),
+                                TextContent(
+                                    type="text",
+                                    text=json.dumps(metadata, indent=2)
+                                )
+                            ]
+                        else:
+                            # Privacy mode - metadata only, no image sent to Anthropic
+                            metadata["privacy_notice"] = "🔒 Image kept local - NOT sent to Anthropic (send_to_claude=false)"
+                            metadata["note"] = "To view this image in Claude, user must explicitly set send_to_claude=true"
+
+                            return [TextContent(
                                 type="text",
                                 text=json.dumps(metadata, indent=2)
-                            )
-                        ]
+                            )]
                     else:
                         # Error case - return text
                         return [TextContent(
@@ -873,11 +922,11 @@ Example:
                         arguments.get("colormap", "seismic"),
                         arguments.get("clip_percentile", 99.0)
                     )
+
+                    # Check privacy consent
+                    send_to_claude = arguments.get("send_to_claude", False)
+
                     if "image_data" in result:
-                        # Return image as ImageContent along with metadata as TextContent
-                        img_bytes = result["image_data"]
-                        img_format = detect_image_format(img_bytes)
-                        img_base64 = base64.b64encode(img_bytes).decode()
                         # Use data_summary or statistics depending on which exists
                         stats = result.get("statistics") or result.get("data_summary", {})
                         metadata = {
@@ -888,19 +937,36 @@ Example:
                             "statistics": stats,
                             "colormap": result["colormap"],
                             "image_size_kb": result["image_size_kb"],
-                            "image_format": img_format
+                            "image_format": result.get("image_format", "PNG")
                         }
-                        return [
-                            ImageContent(
-                                type="image",
-                                data=img_base64,
-                                mimeType=img_format
-                            ),
-                            TextContent(
+
+                        if send_to_claude:
+                            # User consented - send image to Claude
+                            img_bytes = result["image_data"]
+                            img_format = detect_image_format(img_bytes)
+                            img_base64 = base64.b64encode(img_bytes).decode()
+                            metadata["privacy_notice"] = "✅ Image sent to Anthropic/Claude with user consent"
+
+                            return [
+                                ImageContent(
+                                    type="image",
+                                    data=img_base64,
+                                    mimeType=img_format
+                                ),
+                                TextContent(
+                                    type="text",
+                                    text=json.dumps(metadata, indent=2)
+                                )
+                            ]
+                        else:
+                            # Privacy mode - metadata only, no image sent to Anthropic
+                            metadata["privacy_notice"] = "🔒 Image kept local - NOT sent to Anthropic (send_to_claude=false)"
+                            metadata["note"] = "To view this image in Claude, user must explicitly set send_to_claude=true"
+
+                            return [TextContent(
                                 type="text",
                                 text=json.dumps(metadata, indent=2)
-                            )
-                        ]
+                            )]
                     else:
                         # Error case - return text
                         return [TextContent(
