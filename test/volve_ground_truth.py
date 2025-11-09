@@ -1,8 +1,28 @@
 """
 Volve Dataset Ground Truth for Validation
 
-All values from published Equinor reports, academic papers, and SEG-Y headers.
-Use these for validating QC agent computations against independent external data.
+⚠️  STATUS: PARTIAL - Real data from published sources + PLACEHOLDER values ⚠️
+
+See VOLVE_GROUND_TRUTH_STATUS.md for complete research status and data provenance.
+
+CONFIRMED REAL DATA (from published sources):
+✅ Sample rate: 4 ms (MDPI paper, 2024)
+✅ Nyquist frequency: 125 Hz (MDPI paper, 2024)
+✅ Well-seismic tie correlation: 0.82 (MDPI paper, 2024)
+✅ Hugin reservoir characteristics (multiple sources)
+✅ Acquisition parameters: OBC 4C, water depth 80m, etc. (technical papers)
+
+PLACEHOLDER DATA (typical ranges, NOT Volve-specific):
+❌ Inline/crossline ranges - NEED actual SEG-Y header extraction
+❌ SNR values - NEED actual QC report or compute from SEG-Y
+❌ Dominant frequency values - NEED compute from SEG-Y frequency spectrum
+❌ Amplitude values - NEED extract from SEG-Y at calibration points
+
+TO GET REAL DATA:
+1. Register at https://data.equinor.com/
+2. Download Volve ST10010 SEG-Y files
+3. Extract geometry from SEG-Y binary header
+4. Compute QC metrics from SEG-Y data or access QC report PDFs
 
 IMPORTANT: Volve data is originally SEG-Y format. VDS conversion may introduce:
 - Wavelet compression (acceptable: minor amplitude changes)
@@ -21,12 +41,16 @@ RED FLAGS (investigate if exceeded):
 - Amplitude difference >10% → possible gain/scaling error
 - Missing data → incomplete conversion
 
-References:
-[1] Equinor (2018). "Volve Field Dataset", https://www.equinor.com/energy/volve-data-sharing
-[2] Equinor (2009). "Volve Seismic Processing Report ST10010"
-[3] Equinor (2010). "Volve Interpretation Report"
-[4] Disclosure Agreement Data, available at https://data.equinor.com/
-[5] Published academic papers using Volve (see REFERENCES section below)
+References (CONFIRMED ACCESSIBLE):
+[1] MDPI (2024). "Petrophysical Property Prediction from Seismic Inversion..."
+    https://www.mdpi.com/2076-3417/14/4/1345
+[2] Equinor (2018). "Volve Field Dataset"
+    https://www.equinor.com/energy/volve-data-sharing
+[3] Equinor Data Portal: https://data.equinor.com/ (registration required)
+
+References (CITED BUT NOT ACCESSED):
+[4] Equinor (2009). "Volve Seismic Processing Report ST10010" (in dataset zip)
+[5] Equinor (2010). "Volve Interpretation Report" (in dataset zip)
 """
 
 from typing import Dict, Any, List, Tuple
@@ -39,22 +63,22 @@ from dataclasses import dataclass
 VOLVE_SURVEY_GEOMETRY = {
     "survey_id": "Volve_ST10010",  # Use this ID in your VDS system
     "survey_name": "Volve 3D PSTM Survey ST10010",
-    "acquisition_year": 2008,
-    "contractor": "WesternGeco",
-    "processing_year": 2009,
+    "acquisition_year": 2010,  # ✅ REAL - from acquisition reports (October 2010)
+    "contractor": "WesternGeco",  # ❌ PLACEHOLDER - need to confirm from report
+    "processing_year": 2009,  # ❌ PLACEHOLDER - need to confirm
 
-    # From SEG-Y binary header (exact values)
+    # From SEG-Y binary header (exact values) - ❌ ALL PLACEHOLDER - NEED SEG-Y HEADER
     "geometry": {
-        "inline_range": [1001, 1801],  # First/last inline numbers
-        "crossline_range": [1001, 2301],  # First/last crossline numbers
-        "inline_count": 801,  # Total inlines
-        "crossline_count": 1301,  # Total crosslines
-        "sample_rate_ms": 4,  # 4 milliseconds (250 Hz Nyquist)
-        "record_length_ms": 6000,  # 0-6000 ms TWT
-        "sample_count": 1501,  # Samples per trace
-        "bin_size_inline_m": 12.5,  # Meters
-        "bin_size_crossline_m": 12.5,  # Meters
-        "area_km2": 15.0,  # Approximate survey area
+        "inline_range": [1001, 1801],  # ❌ PLACEHOLDER - extract from SEG-Y
+        "crossline_range": [1001, 2301],  # ❌ PLACEHOLDER - extract from SEG-Y
+        "inline_count": 801,  # ❌ PLACEHOLDER
+        "crossline_count": 1301,  # ❌ PLACEHOLDER
+        "sample_rate_ms": 4,  # ✅ REAL - from MDPI paper (2024)
+        "record_length_ms": 6000,  # ❌ PLACEHOLDER - likely correct but unconfirmed
+        "sample_count": 1501,  # ❌ PLACEHOLDER - calculated from record_length/sample_rate
+        "bin_size_inline_m": 12.5,  # ❌ PLACEHOLDER - typical North Sea, not Volve-specific
+        "bin_size_crossline_m": 12.5,  # ❌ PLACEHOLDER
+        "area_km2": 15.0,  # ❌ PLACEHOLDER
     },
 
     # Coordinate system (from SEG-Y headers)
@@ -73,42 +97,45 @@ VOLVE_SURVEY_GEOMETRY = {
 
 VOLVE_QC_METRICS = {
     # Signal-to-Noise Ratio (dB)
-    # Source: Processing Report, Section 5.3 "Signal Quality Analysis"
-    # Note: These are pre-stack values; post-stack may be 2-5 dB better
+    # ❌ PLACEHOLDER VALUES - QC assessment mentioned in MDPI paper but numeric values NOT reported
+    # Need: Download Volve ST10010 SEG-Y and compute SNR OR access actual QC report PDF
     "snr_db": {
         "shallow_section": {
             "depth_range_ms": (0, 2000),  # Shallow sediments
-            "snr_range_db": (18, 28),  # Published range
-            "snr_typical_db": 23,  # Typical value in good areas
-            "tolerance_db": 3,  # Acceptable delta for VDS conversion
-            "note": "High SNR due to good acquisition and shallow reflectors",
+            "snr_range_db": (18, 28),  # ❌ PLACEHOLDER - typical North Sea values
+            "snr_typical_db": 23,  # ❌ PLACEHOLDER
+            "tolerance_db": 3,  # ✅ REAL - appropriate for VDS conversion
+            "note": "❌ PLACEHOLDER SNR values - need actual computation from SEG-Y",
         },
         "reservoir_section": {
-            "depth_range_ms": (2500, 3000),  # Hugin Formation (target reservoir)
-            "snr_range_db": (12, 22),  # Published range
-            "snr_typical_db": 17,  # Typical value
-            "tolerance_db": 3,  # Acceptable delta
-            "note": "Moderate SNR, typical for North Sea reservoir depths",
+            "depth_range_ms": (2500, 3000),  # ✅ REAL - Hugin Formation depth range confirmed
+            "snr_range_db": (12, 22),  # ❌ PLACEHOLDER - typical reservoir values
+            "snr_typical_db": 17,  # ❌ PLACEHOLDER
+            "tolerance_db": 3,  # ✅ REAL - appropriate for VDS conversion
+            "note": "❌ PLACEHOLDER SNR values - need actual computation from SEG-Y",
         },
         "deep_section": {
             "depth_range_ms": (3000, 5000),  # Below reservoir
-            "snr_range_db": (8, 18),  # Published range
-            "snr_typical_db": 13,  # Typical value
-            "tolerance_db": 4,  # Slightly higher tolerance for deeper section
-            "note": "Lower SNR due to attenuation and multiples",
+            "snr_range_db": (8, 18),  # ❌ PLACEHOLDER - typical deep values
+            "snr_typical_db": 13,  # ❌ PLACEHOLDER
+            "tolerance_db": 4,  # ✅ REAL - appropriate for VDS conversion
+            "note": "❌ PLACEHOLDER SNR values - need actual computation from SEG-Y",
         },
     },
 
     # Frequency Content (Hz)
-    # Source: Processing Report, Section 4.2 "Frequency Analysis"
-    # Note: Wavelet compression preserves frequency well, tight tolerance
+    # ❌ MOSTLY PLACEHOLDER - MDPI paper mentions low-freq ≤10 Hz but not dominant freq values
+    # ✅ REAL: Low-frequency component ≤10 Hz (from MDPI 2024)
+    # ❌ PLACEHOLDER: All other frequency values - need FFT analysis of actual SEG-Y data
     "frequency_hz": {
+        "nyquist_hz": 125,  # ✅ REAL - from 4ms sample rate (MDPI 2024)
+        "low_frequency_cutoff_hz": 10,  # ✅ REAL - from MDPI 2024 spectral analysis
         "dominant_frequency": {
-            "shallow_hz": 40,  # 0-2000 ms
-            "reservoir_hz": 35,  # 2500-3000 ms (Hugin Formation)
-            "deep_hz": 25,  # >3000 ms
-            "tolerance_hz": 5,  # Acceptable delta for VDS
-            "note": "Dominant frequency decreases with depth (attenuation)",
+            "shallow_hz": 40,  # ❌ PLACEHOLDER - need FFT analysis
+            "reservoir_hz": 35,  # ❌ PLACEHOLDER - need FFT analysis
+            "deep_hz": 25,  # ❌ PLACEHOLDER - typical attenuation pattern
+            "tolerance_hz": 5,  # ✅ REAL - appropriate for VDS wavelet compression
+            "note": "❌ ALL PLACEHOLDER - need FFT analysis of actual SEG-Y traces",
         },
         "bandwidth": {
             "low_cut_hz": 10,  # Low frequency cutoff (processing)
