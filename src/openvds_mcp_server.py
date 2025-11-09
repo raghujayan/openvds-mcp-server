@@ -44,11 +44,13 @@ try:
     from .agent_manager import SeismicAgentManager
     from .data_integrity import get_integrity_agent
     from .bulk_operation_router import get_router
+    from .domain_warnings import get_warning_system, check_response_for_domain_issues
 except ImportError:
     from vds_client import VDSClient
     from agent_manager import SeismicAgentManager
     from data_integrity import get_integrity_agent
     from bulk_operation_router import get_router
+    from domain_warnings import get_warning_system, check_response_for_domain_issues
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openvds-mcp-server")
@@ -316,7 +318,45 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_inline_image",
-                    description="⚠️ SINGLE INLINE ONLY ⚠️ Extract ONE inline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE inline. If the user wants multiple inlines, ranges (e.g. '51000 to 59000'), patterns (e.g. 'every 100th'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent. PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.",
+                    description="""⚠️ SINGLE INLINE ONLY ⚠️ Extract ONE inline slice and generate seismic image. Returns PNG for visual analysis.
+
+IMPORTANT: This tool is ONLY for extracting a SINGLE inline. If the user wants multiple inlines, ranges (e.g. '51000 to 59000'), patterns (e.g. 'every 100th'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.
+
+PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.
+
+📊 UNITS REQUIREMENT:
+ALL statistics returned include units or explicit "(unitless)" notation:
+- Amplitude values: (unitless) - arbitrary scaling from acquisition/processing
+- Sample numbers: (samples)
+- Inline/crossline numbers: (line numbers)
+- Frequencies (if computed): Hz
+- Dimensions: (pixels), (traces), (samples)
+
+⚠️ DOMAIN KNOWLEDGE - AMPLITUDE INTERPRETATION:
+
+CRITICAL: Seismic amplitude values are UNITLESS and have NO absolute physical meaning.
+They are relative values that depend on:
+- Acquisition equipment (receivers, sources, geometry)
+- Processing workflows (gain, filters, migration, scaling)
+- Arbitrary normalization applied during processing
+
+SAFE INTERPRETATIONS (within ONE survey only):
+✓ "Inline 55000 shows 2x higher amplitude than inline 54000"
+✓ "Amplitude contrast at this location is 3σ above background"
+✓ "Relative amplitude pattern indicates bright spot"
+✓ "Amplitude range: -1247.3 to 2487.3 (unitless)"
+
+UNSAFE INTERPRETATIONS (NEVER do this):
+✗ "This survey has higher amplitudes than another survey" (meaningless without normalization)
+✗ "Amplitude is 2487" without stating (unitless)
+✗ "Compare raw amplitude values between different surveys"
+
+FOR CROSS-SURVEY COMPARISONS:
+- Use 'compare_survey_quality_metrics' (compares SNR, frequency, continuity)
+- Use 'get_normalized_amplitude_statistics' (RMS-normalized, comparable)
+- NEVER compare raw amplitude values between surveys
+
+ALWAYS specify units or explicitly state (unitless) in all responses!""",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -359,7 +399,29 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_crossline_image",
-                    description="⚠️ SINGLE CROSSLINE ONLY ⚠️ Extract ONE crossline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE crossline. If the user wants multiple crosslines, ranges, patterns (e.g. 'every Nth', 'skipping 100'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent. PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.",
+                    description="""⚠️ SINGLE CROSSLINE ONLY ⚠️ Extract ONE crossline slice and generate seismic image. Returns PNG for visual analysis.
+
+IMPORTANT: This tool is ONLY for extracting a SINGLE crossline. If the user wants multiple crosslines, ranges, patterns (e.g. 'every Nth', 'skipping 100'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.
+
+PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.
+
+📊 UNITS REQUIREMENT:
+ALL statistics returned include units or explicit "(unitless)" notation:
+- Amplitude values: (unitless) - arbitrary scaling from acquisition/processing
+- Sample numbers: (samples)
+- Inline/crossline numbers: (line numbers)
+- Dimensions: (pixels), (traces), (samples)
+
+⚠️ DOMAIN KNOWLEDGE - AMPLITUDE INTERPRETATION:
+
+CRITICAL: Seismic amplitude values are UNITLESS and have NO absolute physical meaning.
+Amplitudes vary arbitrarily between surveys due to different acquisition/processing.
+
+SAFE: Compare within ONE survey only
+UNSAFE: Compare raw amplitudes between different surveys
+FOR CROSS-SURVEY: Use 'compare_survey_quality_metrics' or 'get_normalized_amplitude_statistics'
+
+ALWAYS specify units or explicitly state (unitless) in all responses!""",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -402,7 +464,26 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_timeslice_image",
-                    description="Extract a time/depth slice (map view) and generate a seismic image visualization. Returns PNG image showing amplitude distribution across the survey area at a specific time/depth. PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.",
+                    description="""Extract a time/depth slice (map view) and generate a seismic image visualization. Returns PNG image showing amplitude distribution across the survey area at a specific time/depth.
+
+PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.
+
+📊 UNITS REQUIREMENT:
+ALL statistics returned include units or explicit "(unitless)" notation:
+- Amplitude values: (unitless) - arbitrary scaling from acquisition/processing
+- Time/depth values: (samples) or (ms) or (m) depending on domain
+- Inline/crossline ranges: (line numbers)
+
+⚠️ DOMAIN KNOWLEDGE - AMPLITUDE INTERPRETATION:
+
+CRITICAL: Seismic amplitude values are UNITLESS and have NO absolute physical meaning.
+Amplitudes vary arbitrarily between surveys due to different acquisition/processing.
+
+SAFE: Compare within ONE survey only
+UNSAFE: Compare raw amplitudes between different surveys
+FOR CROSS-SURVEY: Use 'compare_survey_quality_metrics' or 'get_normalized_amplitude_statistics'
+
+ALWAYS specify units or explicitly state (unitless) in all responses!""",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -453,7 +534,30 @@ class OpenVDSMCPServer:
                 # Agent tools
                 Tool(
                     name="agent_start_extraction",
-                    description="**USE THIS FOR BULK/MULTIPLE EXTRACTIONS** - Start autonomous extraction from natural language instruction. The agent will parse the instruction and execute extractions in the background (non-blocking). Use this for: multiple slices, ranges, patterns (every Nth, skipping N), or any instruction with 'all', 'every', 'multiple'. Check progress with agent_get_status. Examples: 'Extract all inlines from 51000 to 59000 at 2000 spacing', 'Extract crosslines skipping 100 for QC', 'Extract every 500th inline', 'Extract 3 representative inlines'",
+                    description="""**USE THIS FOR BULK/MULTIPLE EXTRACTIONS** - Start autonomous extraction from natural language instruction.
+
+The agent will parse the instruction and execute extractions in the background (non-blocking).
+
+USE THIS FOR: multiple slices, ranges, patterns (every Nth, skipping N), or any instruction with 'all', 'every', 'multiple'.
+
+Check progress with agent_get_status.
+
+EXAMPLES:
+- 'Extract all inlines from 51000 to 59000 at 2000 spacing'
+- 'Extract crosslines skipping 100 for QC'
+- 'Extract every 500th inline'
+- 'Extract 3 representative inlines'
+
+📊 UNITS IN RESULTS:
+Agent results include units for all quantities:
+- Amplitudes: (unitless)
+- Line numbers: (line numbers)
+- Sample numbers: (samples)
+- Dimensions: (pixels), (traces), (samples)
+
+⚠️ DOMAIN NOTE:
+Agent extracts images for SINGLE SURVEY only. Images stored in container memory (not sent to Anthropic).
+For cross-survey comparisons, use 'compare_survey_quality_metrics' AFTER extraction.""",
                     inputSchema={
                         "type": "object",
                         "properties": {
