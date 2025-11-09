@@ -461,7 +461,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="agent_get_status",
-                    description="Get status of autonomous agent including progress, state, and current task",
+                    description="⚠️ ONLY USE WHEN USER EXPLICITLY ASKS ⚠️ Get status of autonomous agent. The agent runs in background - DO NOT automatically poll status. Only call this when the user specifically asks to check progress. The agent will continue working whether you check or not.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -500,7 +500,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="agent_get_results",
-                    description="Get extraction results from completed or active session. Returns all completed and failed tasks with statistics.",
+                    description="⚠️ ONLY USE WHEN USER EXPLICITLY ASKS ⚠️ Get results from agent session. DO NOT automatically call this after starting agent. Only use when user specifically asks for results (e.g. 'show me the results', 'what did the agent find'). The agent works independently.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -680,17 +680,17 @@ Example:
 
                 # Return informative message to user
                 response_msg = (
-                    f"🤖 **Bulk Operation Detected**\n\n"
+                    f"🤖 **Bulk Operation Detected - Agent Started**\n\n"
                     f"Pattern: `{routing_info['detected_pattern']}`\n"
-                    f"Automatically routing to agent for efficient execution.\n\n"
-                    f"**Session ID**: `{agent_result['session_id']}`\n"
-                    f"**Status**: {agent_result['state']}\n\n"
-                    f"The agent is now working in the background. You can:\n"
-                    f"- Continue conversation normally\n"
-                    f"- Check progress: use `agent_get_status`\n"
-                    f"- Pause execution: use `agent_pause`\n"
-                    f"- Get results when ready: use `agent_get_results`\n\n"
-                    f"_This automatic routing ensures efficient handling of bulk operations._"
+                    f"Session ID: `{agent_result['session_id']}`\n\n"
+                    f"✅ The agent is now working in the background.\n"
+                    f"✅ You can continue the conversation or ask other questions.\n"
+                    f"✅ The agent will complete its work independently.\n\n"
+                    f"**When YOU want to check progress**, ask me to:\n"
+                    f"- Check status: \"What's the status?\" or \"How's it going?\"\n"
+                    f"- Get results: \"Show me the results\" (when complete)\n"
+                    f"- Pause: \"Pause the agent\"\n\n"
+                    f"_I will NOT automatically poll status - you're in control._"
                 )
 
                 return [TextContent(
