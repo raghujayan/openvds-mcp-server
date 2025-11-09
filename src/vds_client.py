@@ -22,11 +22,20 @@ except ImportError:
     HAS_OPENVDS = False
 
 # Import our new modules
-from src.mount_health import MountHealthChecker, MountHealthStatus
-from src.es_metadata_client import ESMetadataClient
-from src.query_cache import get_cache
-from src.seismic_viz import get_visualizer
-from src.data_integrity import get_integrity_agent
+# Use try/except to handle both module and script execution contexts
+try:
+    from src.mount_health import MountHealthChecker, MountHealthStatus
+    from src.es_metadata_client import ESMetadataClient
+    from src.query_cache import get_cache
+    from src.seismic_viz import get_visualizer
+    from src.data_integrity import get_integrity_agent
+except ImportError:
+    # Fallback for when running as script (python src/file.py)
+    from mount_health import MountHealthChecker, MountHealthStatus
+    from es_metadata_client import ESMetadataClient
+    from query_cache import get_cache
+    from seismic_viz import get_visualizer
+    from data_integrity import get_integrity_agent
 
 logger = logging.getLogger("vds-client")
 
