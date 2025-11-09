@@ -22,11 +22,11 @@ except ImportError:
     HAS_OPENVDS = False
 
 # Import our new modules
-from mount_health import MountHealthChecker, MountHealthStatus
-from es_metadata_client import ESMetadataClient
-from query_cache import get_cache
-from seismic_viz import get_visualizer
-from data_integrity import get_integrity_agent
+from src.mount_health import MountHealthChecker, MountHealthStatus
+from src.es_metadata_client import ESMetadataClient
+from src.query_cache import get_cache
+from src.seismic_viz import get_visualizer
+from src.data_integrity import get_integrity_agent
 
 logger = logging.getLogger("vds-client")
 
