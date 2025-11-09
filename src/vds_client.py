@@ -8,7 +8,7 @@ Enhanced with:
 """
 
 import logging
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import asyncio
 from pathlib import Path
 import os
@@ -63,6 +63,97 @@ class VDSClient:
 
         # Query cache for performance
         self.cache = get_cache()
+
+        # API response size limits (prevent huge payloads)
+        self.max_data_elements = int(os.getenv("MAX_DATA_ELEMENTS", "100000"))  # ~400KB for float32
+
+    def _safe_coordinate_to_index(
+        self,
+        axis,
+        coordinate: float,
+        max_index: int
+    ) -> int:
+        """
+        Safely convert coordinate to sample index with rounding and clamping.
+
+        Args:
+            axis: OpenVDS axis descriptor
+            coordinate: Coordinate value to convert
+            max_index: Maximum valid index (dimension size - 1)
+
+        Returns:
+            Clamped index in range [0, max_index]
+        """
+        # Round to nearest sample (not truncate)
+        index = round(axis.coordinateToSampleIndex(float(coordinate)))
+
+        # Clamp to valid range
+        return max(0, min(index, max_index))
+
+    def _get_no_value_sentinel(self, layout, channel: int = 0) -> Optional[float]:
+        """
+        Get the no-value sentinel from VDS channel descriptor.
+
+        VDS may use a specific value (not NaN) to represent missing data.
+
+        Args:
+            layout: OpenVDS layout
+            channel: Channel number (default 0)
+
+        Returns:
+            No-value sentinel, or None if not set
+        """
+        try:
+            channel_descriptor = layout.getChannelDescriptor(channel)
+            no_value = channel_descriptor.getNoValue()
+            return no_value
+        except Exception as e:
+            logger.debug(f"Could not get no-value sentinel: {e}")
+            return None
+
+    def _count_null_traces(
+        self,
+        buffer: np.ndarray,
+        no_value: Optional[float] = None,
+        axis: int = 1
+    ) -> int:
+        """
+        Count null/bad traces in extracted data.
+
+        A trace is null if ALL samples are either NaN or equal to no-value sentinel.
+
+        Args:
+            buffer: Data buffer (2D or 3D array)
+            no_value: No-value sentinel (if None, only check NaN)
+            axis: Axis along which to check (default 1 = samples)
+
+        Returns:
+            Count of null traces
+        """
+        # Check for NaN traces
+        nan_mask = np.isnan(buffer).all(axis=axis)
+
+        # Check for no-value traces (if sentinel is set and not NaN)
+        if no_value is not None and not np.isnan(no_value):
+            # For float no-value, use tolerance
+            no_value_mask = np.isclose(buffer, no_value, rtol=1e-5).all(axis=axis)
+            null_mask = nan_mask | no_value_mask
+        else:
+            null_mask = nan_mask
+
+        return int(null_mask.sum())
+
+    async def _safe_wait_for_completion(self, request):
+        """
+        Safely wait for OpenVDS request completion without blocking event loop.
+
+        OpenVDS waitForCompletion() is a blocking call. We run it in a thread pool
+        to avoid blocking the async event loop.
+
+        Args:
+            request: OpenVDS request object
+        """
+        await asyncio.to_thread(request.waitForCompletion)
 
     def _translate_path(self, es_path: str) -> str:
         """
@@ -722,19 +813,36 @@ class VDSClient:
             layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
 
-            # Convert inline number to index with proper rounding
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines = layout.getDimensionNumSamples(self.INLINE_DIM)
+
+            # Convert inline number to index with proper rounding and clamping
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
-            inline_index = int(inline_axis.coordinateToSampleIndex(float(inline_number)))
-            
-            # Define sample range with proper index conversion
+            inline_index = self._safe_coordinate_to_index(
+                inline_axis, inline_number, num_inlines - 1
+            )
+
+            # Define sample range with proper index conversion and clamping
             # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
+            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
             if sample_range:
-                sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+                sample_start_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[0], num_samples_total - 1
+                )
+                sample_end_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[1], num_samples_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 sample_start_idx = 0
-                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_end_idx = num_samples_total
+
+            # Validate sample range
+            if sample_start_idx >= sample_end_idx:
+                return {
+                    "error": f"Invalid sample range: start {sample_start_idx} >= end {sample_end_idx}"
+                }
             
             # Define voxel range for inline slice (voxelMax is exclusive)
             voxel_min = (sample_start_idx, 0, inline_index)
@@ -746,10 +854,9 @@ class VDSClient:
             
             # Pre-allocate buffer with REVERSED dimensions for NumPy
             # voxel order is (sample, crossline, inline) but NumPy needs (crossline, sample)
-            num_crosslines = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
             num_samples = sample_end_idx - sample_start_idx
             buffer = np.empty((num_crosslines, num_samples), dtype=np.float32)
-            
+
             # Request data extraction
             request = manager.requestVolumeSubset(
                 data_out=buffer,
@@ -759,9 +866,12 @@ class VDSClient:
                 lod=0,
                 channel=0
             )
-            
-            # Wait for completion
-            request.waitForCompletion()
+
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
+
+            # Get no-value sentinel for proper null detection
+            no_value = self._get_no_value_sentinel(layout, channel=0)
             
             # Calculate statistics from real data
             result = {
@@ -779,36 +889,52 @@ class VDSClient:
                     "amplitude_range": [float(buffer.min()), float(buffer.max())],
                     "mean_amplitude": float(buffer.mean()),
                     "std_amplitude": float(buffer.std()),
-                    "null_traces": int(np.isnan(buffer).any(axis=1).sum())
+                    "null_traces": self._count_null_traces(buffer, no_value, axis=1)
                 },
                 "note": "Real data extracted from VDS file"
             }
 
             # Optionally include raw data and provenance for validation
+            # Check payload size to prevent huge responses
             if return_data:
-                result["data"] = buffer.tolist()  # Convert to list for JSON serialization
+                total_elements = buffer.size
+                if total_elements > self.max_data_elements:
+                    logger.warning(
+                        f"Data too large for survey={survey_id}, inline={inline_number}: "
+                        f"{total_elements} elements (max: {self.max_data_elements}). "
+                        f"Not returning raw data."
+                    )
+                    result["data_warning"] = (
+                        f"Data too large ({total_elements} elements, "
+                        f"max {self.max_data_elements}). Raw data not included."
+                    )
+                else:
+                    result["data"] = buffer.tolist()  # Convert to list for JSON serialization
 
-                # Add provenance tracking
-                integrity_agent = get_integrity_agent()
-                source_info = {
-                    "vds_file": survey.get("file_path", "unknown"),
-                    "survey_id": survey_id,
-                    "survey_name": survey.get("name", "unknown")
-                }
-                extraction_params = {
-                    "section_type": "inline",
-                    "section_number": inline_number,
-                    "sample_range": result["sample_range"],
-                    "crossline_range": result["crossline_range"]
-                }
-                result["provenance"] = integrity_agent.create_provenance_record(
-                    buffer, source_info, extraction_params
-                )
+                    # Add provenance tracking (only when data is returned)
+                    integrity_agent = get_integrity_agent()
+                    source_info = {
+                        "vds_file": survey.get("file_path", "unknown"),
+                        "survey_id": survey_id,
+                        "survey_name": survey.get("name", "unknown")
+                    }
+                    extraction_params = {
+                        "section_type": "inline",
+                        "section_number": inline_number,
+                        "sample_range": result["sample_range"],
+                        "crossline_range": result["crossline_range"]
+                    }
+                    result["provenance"] = integrity_agent.create_provenance_record(
+                        buffer, source_info, extraction_params
+                    )
 
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error extracting inline: {e}")
+            logger.error(
+                f"Error extracting inline for survey={survey_id}, inline={inline_number}: {e}",
+                exc_info=True
+            )
             return {"error": f"Data extraction failed: {str(e)}"}
     
     async def extract_crossline(
@@ -907,8 +1033,8 @@ class VDSClient:
                 channel=0
             )
             
-            # Wait for completion
-            request.waitForCompletion()
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
             
             # Calculate statistics from real data
             result = {
@@ -1050,8 +1176,8 @@ class VDSClient:
                 channel=0
             )
             
-            # Wait for completion
-            request.waitForCompletion()
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
             
             # Calculate statistics
             volume_size_mb = buffer.nbytes / (1024 * 1024)
