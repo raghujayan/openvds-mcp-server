@@ -43,10 +43,12 @@ try:
     from .vds_client import VDSClient
     from .agent_manager import SeismicAgentManager
     from .data_integrity import get_integrity_agent
+    from .bulk_operation_router import get_router
 except ImportError:
     from vds_client import VDSClient
     from agent_manager import SeismicAgentManager
     from data_integrity import get_integrity_agent
+    from bulk_operation_router import get_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openvds-mcp-server")
@@ -59,6 +61,7 @@ class OpenVDSMCPServer:
         self.server = Server("openvds-mcp-server")
         self.vds_client: Optional[VDSClient] = None
         self.agent_manager: Optional[SeismicAgentManager] = None
+        self.bulk_router = get_router()  # Automatic bulk operation routing
         self.setup_handlers()
     
     def setup_handlers(self):
@@ -313,7 +316,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_inline_image",
-                    description="Extract a SINGLE inline slice and generate a seismic image visualization. Returns PNG image that Claude can view and analyze for structural features, faults, and data quality. FOR BULK EXTRACTIONS (multiple inlines, ranges, patterns like 'every Nth'), use agent_start_extraction instead.",
+                    description="⚠️ SINGLE INLINE ONLY ⚠️ Extract ONE inline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE inline. If the user wants multiple inlines, ranges (e.g. '51000 to 59000'), patterns (e.g. 'every 100th'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -351,7 +354,7 @@ class OpenVDSMCPServer:
                 ),
                 Tool(
                     name="extract_crossline_image",
-                    description="Extract a SINGLE crossline slice and generate a seismic image visualization. Returns PNG image for visual analysis. FOR BULK EXTRACTIONS (multiple crosslines, ranges, patterns like 'every Nth', 'skipping 100'), use agent_start_extraction instead.",
+                    description="⚠️ SINGLE CROSSLINE ONLY ⚠️ Extract ONE crossline slice and generate seismic image. Returns PNG for visual analysis. IMPORTANT: This tool is ONLY for extracting a SINGLE crossline. If the user wants multiple crosslines, ranges, patterns (e.g. 'every Nth', 'skipping 100'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -649,6 +652,55 @@ Example:
                     type="text",
                     text=json.dumps({"error": "VDS client not initialized"})
                 )]
+
+            # =============================================================================
+            # AUTOMATIC BULK OPERATION DETECTION AND ROUTING
+            # =============================================================================
+            # Ensure robustness: automatically route bulk operations to agents
+            # Don't rely on Claude making the right decision
+
+            is_bulk, routing_info = self.bulk_router.detect_bulk_pattern(
+                tool_name=name,
+                arguments=arguments,
+                context=arguments.get('instruction') or str(arguments)  # Use instruction or full args as context
+            )
+
+            if is_bulk and routing_info and self.agent_manager:
+                logger.warning(
+                    f"⚠️  Detected bulk operation pattern: {routing_info['detected_pattern']} "
+                    f"- Auto-routing to agent instead of single {name} call"
+                )
+
+                # Automatically start agent extraction instead
+                agent_result = await self.agent_manager.start_extraction(
+                    survey_id=routing_info['survey_id'],
+                    instruction=routing_info['instruction'] or arguments.get('instruction', ''),
+                    auto_execute=True
+                )
+
+                # Return informative message to user
+                response_msg = (
+                    f"🤖 **Bulk Operation Detected**\n\n"
+                    f"Pattern: `{routing_info['detected_pattern']}`\n"
+                    f"Automatically routing to agent for efficient execution.\n\n"
+                    f"**Session ID**: `{agent_result['session_id']}`\n"
+                    f"**Status**: {agent_result['state']}\n\n"
+                    f"The agent is now working in the background. You can:\n"
+                    f"- Continue conversation normally\n"
+                    f"- Check progress: use `agent_get_status`\n"
+                    f"- Pause execution: use `agent_pause`\n"
+                    f"- Get results when ready: use `agent_get_results`\n\n"
+                    f"_This automatic routing ensures efficient handling of bulk operations._"
+                )
+
+                return [TextContent(
+                    type="text",
+                    text=response_msg
+                )]
+
+            # =============================================================================
+            # REGULAR TOOL EXECUTION
+            # =============================================================================
 
             try:
                 if name == "extract_inline":
