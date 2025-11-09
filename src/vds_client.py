@@ -1170,23 +1170,55 @@ class VDSClient:
             layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
 
-            # Convert ranges to indices with proper rounding
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines_total = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines_total = layout.getDimensionNumSamples(self.INLINE_DIM)
+
+            # Convert ranges to indices with proper rounding and clamping
             # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
             inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
             sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-            
-            inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
-            inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1]))) + 1
-            crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
-            crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))) + 1
-            
+
+            inline_start_idx = self._safe_coordinate_to_index(
+                inline_axis, inline_range[0], num_inlines_total - 1
+            )
+            inline_end_idx = self._safe_coordinate_to_index(
+                inline_axis, inline_range[1], num_inlines_total - 1
+            ) + 1  # Exclusive upper bound
+
+            crossline_start_idx = self._safe_coordinate_to_index(
+                crossline_axis, crossline_range[0], num_crosslines_total - 1
+            )
+            crossline_end_idx = self._safe_coordinate_to_index(
+                crossline_axis, crossline_range[1], num_crosslines_total - 1
+            ) + 1  # Exclusive upper bound
+
             if sample_range:
-                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+                sample_start_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[0], num_samples_total - 1
+                )
+                sample_end_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[1], num_samples_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 sample_start_idx = 0
-                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_end_idx = num_samples_total
+
+            # Validate ranges
+            if inline_start_idx >= inline_end_idx:
+                return {
+                    "error": f"Invalid inline range: start {inline_start_idx} >= end {inline_end_idx}"
+                }
+            if crossline_start_idx >= crossline_end_idx:
+                return {
+                    "error": f"Invalid crossline range: start {crossline_start_idx} >= end {crossline_end_idx}"
+                }
+            if sample_start_idx >= sample_end_idx:
+                return {
+                    "error": f"Invalid sample range: start {sample_start_idx} >= end {sample_end_idx}"
+                }
             
             # Define voxel range (voxelMax is exclusive)
             voxel_min = (sample_start_idx, crossline_start_idx, inline_start_idx)
@@ -1240,7 +1272,11 @@ class VDSClient:
             }
             
         except Exception as e:
-            logger.error(f"Error extracting volume: {e}")
+            logger.error(
+                f"Error extracting volume subset for survey={survey_id}, "
+                f"inline_range={inline_range}, crossline_range={crossline_range}: {e}",
+                exc_info=True
+            )
             return {"error": f"Data extraction failed: {str(e)}"}
     
     async def extract_inline_image(
@@ -1291,19 +1327,36 @@ class VDSClient:
             # Get the survey metadata for ranges
             survey = await self.get_survey_metadata(survey_id, include_stats=False)
 
-            # Convert inline number to index
-            inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
-            inline_index = int(inline_axis.coordinateToSampleIndex(float(inline_number)))
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines_total = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines_total = layout.getDimensionNumSamples(self.INLINE_DIM)
 
-            # Define sample range
+            # Convert inline number to index with proper rounding and clamping
+            inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
+            inline_index = self._safe_coordinate_to_index(
+                inline_axis, inline_number, num_inlines_total - 1
+            )
+
+            # Define sample range with proper conversion and clamping
             if sample_range:
                 sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+                sample_start_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[0], num_samples_total - 1
+                )
+                sample_end_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[1], num_samples_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 sample_start_idx = 0
-                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_end_idx = num_samples_total
                 sample_range = survey["sample_range"]
+
+            # Validate sample range
+            if sample_start_idx >= sample_end_idx:
+                return {
+                    "error": f"Invalid sample range: start {sample_start_idx} >= end {sample_end_idx}"
+                }
 
             # Define voxel range
             voxel_min = (sample_start_idx, 0, inline_index)
@@ -1314,7 +1367,7 @@ class VDSClient:
             )
 
             # Extract data
-            num_crosslines = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_crosslines = num_crosslines_total
             num_samples = sample_end_idx - sample_start_idx
             buffer = np.empty((num_crosslines, num_samples), dtype=np.float32)
 
@@ -1326,7 +1379,9 @@ class VDSClient:
                 lod=0,
                 channel=0
             )
-            request.waitForCompletion()
+
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
 
             # Generate visualization
             visualizer = get_visualizer()
@@ -1352,7 +1407,10 @@ class VDSClient:
             }
 
         except Exception as e:
-            logger.error(f"Error generating inline image: {e}")
+            logger.error(
+                f"Error generating inline image for survey={survey_id}, inline={inline_number}: {e}",
+                exc_info=True
+            )
             return {"error": f"Image generation failed: {str(e)}"}
 
     async def extract_crossline_image(
@@ -1385,19 +1443,36 @@ class VDSClient:
             manager = openvds.getAccessManager(vds_handle)
             survey = await self.get_survey_metadata(survey_id, include_stats=False)
 
-            # Convert crossline number to index
-            crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
-            crossline_index = int(crossline_axis.coordinateToSampleIndex(float(crossline_number)))
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines_total = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines_total = layout.getDimensionNumSamples(self.INLINE_DIM)
 
-            # Define sample range
+            # Convert crossline number to index with proper rounding and clamping
+            crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
+            crossline_index = self._safe_coordinate_to_index(
+                crossline_axis, crossline_number, num_crosslines_total - 1
+            )
+
+            # Define sample range with proper conversion and clamping
             if sample_range:
                 sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+                sample_start_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[0], num_samples_total - 1
+                )
+                sample_end_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[1], num_samples_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 sample_start_idx = 0
-                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_end_idx = num_samples_total
                 sample_range = survey["sample_range"]
+
+            # Validate sample range
+            if sample_start_idx >= sample_end_idx:
+                return {
+                    "error": f"Invalid sample range: start {sample_start_idx} >= end {sample_end_idx}"
+                }
 
             # Define voxel range
             voxel_min = (sample_start_idx, crossline_index, 0)
@@ -1408,7 +1483,7 @@ class VDSClient:
             )
 
             # Extract data
-            num_inlines = layout.getDimensionNumSamples(self.INLINE_DIM)
+            num_inlines = num_inlines_total
             num_samples = sample_end_idx - sample_start_idx
             buffer = np.empty((num_inlines, num_samples), dtype=np.float32)
 
@@ -1420,7 +1495,9 @@ class VDSClient:
                 lod=0,
                 channel=0
             )
-            request.waitForCompletion()
+
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
 
             # Generate visualization
             visualizer = get_visualizer()
@@ -1445,7 +1522,10 @@ class VDSClient:
             }
 
         except Exception as e:
-            logger.error(f"Error generating crossline image: {e}")
+            logger.error(
+                f"Error generating crossline image for survey={survey_id}, crossline={crossline_number}: {e}",
+                exc_info=True
+            )
             return {"error": f"Image generation failed: {str(e)}"}
 
     async def extract_timeslice(
@@ -1690,28 +1770,54 @@ class VDSClient:
             layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
 
-            # Convert time value to sample index
-            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-            sample_index = int(sample_axis.coordinateToSampleIndex(float(time_value)))
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines_total = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines_total = layout.getDimensionNumSamples(self.INLINE_DIM)
 
-            # Define inline and crossline ranges
+            # Convert time value to sample index with proper rounding and clamping
+            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
+            sample_index = self._safe_coordinate_to_index(
+                sample_axis, time_value, num_samples_total - 1
+            )
+
+            # Define inline range with proper conversion and clamping
             if inline_range:
                 inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
-                inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
-                inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1]))) + 1
+                inline_start_idx = self._safe_coordinate_to_index(
+                    inline_axis, inline_range[0], num_inlines_total - 1
+                )
+                inline_end_idx = self._safe_coordinate_to_index(
+                    inline_axis, inline_range[1], num_inlines_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 inline_start_idx = 0
-                inline_end_idx = layout.getDimensionNumSamples(self.INLINE_DIM)
+                inline_end_idx = num_inlines_total
                 inline_range = survey["inline_range"]
 
+            # Define crossline range with proper conversion and clamping
             if crossline_range:
                 crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
-                crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
-                crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))) + 1
+                crossline_start_idx = self._safe_coordinate_to_index(
+                    crossline_axis, crossline_range[0], num_crosslines_total - 1
+                )
+                crossline_end_idx = self._safe_coordinate_to_index(
+                    crossline_axis, crossline_range[1], num_crosslines_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 crossline_start_idx = 0
-                crossline_end_idx = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+                crossline_end_idx = num_crosslines_total
                 crossline_range = survey["crossline_range"]
+
+            # Validate ranges
+            if inline_start_idx >= inline_end_idx:
+                return {
+                    "error": f"Invalid inline range: start {inline_start_idx} >= end {inline_end_idx}"
+                }
+            if crossline_start_idx >= crossline_end_idx:
+                return {
+                    "error": f"Invalid crossline range: start {crossline_start_idx} >= end {crossline_end_idx}"
+                }
 
             # Define voxel range for time slice (single sample plane)
             voxel_min = (sample_index, crossline_start_idx, inline_start_idx)
@@ -1730,7 +1836,9 @@ class VDSClient:
                 lod=0,
                 channel=0
             )
-            request.waitForCompletion()
+
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
 
             # Generate visualization
             visualizer = get_visualizer()
@@ -1771,7 +1879,10 @@ class VDSClient:
             }
 
         except Exception as e:
-            logger.error(f"Error generating timeslice image: {e}")
+            logger.error(
+                f"Error generating timeslice image for survey={survey_id}, time={time_value}: {e}",
+                exc_info=True
+            )
             return {"error": f"Image generation failed: {str(e)}"}
 
     async def get_facets(
