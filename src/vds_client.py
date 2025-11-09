@@ -995,19 +995,36 @@ class VDSClient:
             layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
 
-            # Convert crossline number to index with proper rounding
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines = layout.getDimensionNumSamples(self.INLINE_DIM)
+
+            # Convert crossline number to index with proper rounding and clamping
             crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
-            crossline_index = int(crossline_axis.coordinateToSampleIndex(float(crossline_number)))
-            
-            # Define sample range with proper index conversion
+            crossline_index = self._safe_coordinate_to_index(
+                crossline_axis, crossline_number, num_crosslines - 1
+            )
+
+            # Define sample range with proper index conversion and clamping
             # User ranges are INCLUSIVE, voxelMax is EXCLUSIVE, so add +1
+            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
             if sample_range:
-                sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-                sample_start_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[0])))
-                sample_end_idx = int(sample_axis.coordinateToSampleIndex(float(sample_range[1]))) + 1
+                sample_start_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[0], num_samples_total - 1
+                )
+                sample_end_idx = self._safe_coordinate_to_index(
+                    sample_axis, sample_range[1], num_samples_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 sample_start_idx = 0
-                sample_end_idx = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+                sample_end_idx = num_samples_total
+
+            # Validate sample range
+            if sample_start_idx >= sample_end_idx:
+                return {
+                    "error": f"Invalid sample range: start {sample_start_idx} >= end {sample_end_idx}"
+                }
             
             # Define voxel range for crossline slice (voxelMax is exclusive)
             voxel_min = (sample_start_idx, crossline_index, 0)
@@ -1019,10 +1036,9 @@ class VDSClient:
             
             # Pre-allocate buffer with REVERSED dimensions for NumPy
             # voxel order is (sample, crossline, inline) but NumPy needs (inline, sample)
-            num_inlines = layout.getDimensionNumSamples(self.INLINE_DIM)
             num_samples = sample_end_idx - sample_start_idx
             buffer = np.empty((num_inlines, num_samples), dtype=np.float32)
-            
+
             # Request data extraction
             request = manager.requestVolumeSubset(
                 data_out=buffer,
@@ -1032,10 +1048,13 @@ class VDSClient:
                 lod=0,
                 channel=0
             )
-            
+
             # Wait for completion (async-safe - runs in thread pool)
             await self._safe_wait_for_completion(request)
-            
+
+            # Get no-value sentinel for proper null detection
+            no_value = self._get_no_value_sentinel(layout, channel=0)
+
             # Calculate statistics from real data
             result = {
                 "survey_id": survey_id,
@@ -1052,36 +1071,52 @@ class VDSClient:
                     "amplitude_range": [float(buffer.min()), float(buffer.max())],
                     "mean_amplitude": float(buffer.mean()),
                     "std_amplitude": float(buffer.std()),
-                    "null_traces": int(np.isnan(buffer).any(axis=1).sum())
+                    "null_traces": self._count_null_traces(buffer, no_value, axis=1)
                 },
                 "note": "Real data extracted from VDS file"
             }
 
             # Optionally include raw data and provenance for validation
+            # Check payload size to prevent huge responses
             if return_data:
-                result["data"] = buffer.tolist()  # Convert to list for JSON serialization
+                total_elements = buffer.size
+                if total_elements > self.max_data_elements:
+                    logger.warning(
+                        f"Data too large for survey={survey_id}, crossline={crossline_number}: "
+                        f"{total_elements} elements (max: {self.max_data_elements}). "
+                        f"Not returning raw data."
+                    )
+                    result["data_warning"] = (
+                        f"Data too large ({total_elements} elements, "
+                        f"max {self.max_data_elements}). Raw data not included."
+                    )
+                else:
+                    result["data"] = buffer.tolist()  # Convert to list for JSON serialization
 
-                # Add provenance tracking
-                integrity_agent = get_integrity_agent()
-                source_info = {
-                    "vds_file": survey.get("file_path", "unknown"),
-                    "survey_id": survey_id,
-                    "survey_name": survey.get("name", "unknown")
-                }
-                extraction_params = {
-                    "section_type": "crossline",
-                    "section_number": crossline_number,
-                    "sample_range": result["sample_range"],
-                    "inline_range": result["inline_range"]
-                }
-                result["provenance"] = integrity_agent.create_provenance_record(
-                    buffer, source_info, extraction_params
-                )
+                    # Add provenance tracking (only when data is returned)
+                    integrity_agent = get_integrity_agent()
+                    source_info = {
+                        "vds_file": survey.get("file_path", "unknown"),
+                        "survey_id": survey_id,
+                        "survey_name": survey.get("name", "unknown")
+                    }
+                    extraction_params = {
+                        "section_type": "crossline",
+                        "section_number": crossline_number,
+                        "sample_range": result["sample_range"],
+                        "inline_range": result["inline_range"]
+                    }
+                    result["provenance"] = integrity_agent.create_provenance_record(
+                        buffer, source_info, extraction_params
+                    )
 
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error extracting crossline: {e}")
+            logger.error(
+                f"Error extracting crossline for survey={survey_id}, crossline={crossline_number}: {e}",
+                exc_info=True
+            )
             return {"error": f"Data extraction failed: {str(e)}"}
     
     async def extract_volume_subset(
@@ -1463,28 +1498,53 @@ class VDSClient:
             layout = openvds.getLayout(vds_handle)
             manager = openvds.getAccessManager(vds_handle)
 
-            # Convert time value to sample index
-            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
-            sample_index = int(sample_axis.coordinateToSampleIndex(float(time_value)))
+            # Get dimension sizes for clamping
+            num_samples_total = layout.getDimensionNumSamples(self.SAMPLE_DIM)
+            num_crosslines_total = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+            num_inlines_total = layout.getDimensionNumSamples(self.INLINE_DIM)
 
-            # Define inline and crossline ranges
+            # Convert time value to sample index with proper rounding and clamping
+            sample_axis = layout.getAxisDescriptor(self.SAMPLE_DIM)
+            sample_index = self._safe_coordinate_to_index(
+                sample_axis, time_value, num_samples_total - 1
+            )
+
+            # Define inline and crossline ranges with proper conversion and clamping
+            inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
             if inline_range:
-                inline_axis = layout.getAxisDescriptor(self.INLINE_DIM)
-                inline_start_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[0])))
-                inline_end_idx = int(inline_axis.coordinateToSampleIndex(float(inline_range[1]))) + 1
+                inline_start_idx = self._safe_coordinate_to_index(
+                    inline_axis, inline_range[0], num_inlines_total - 1
+                )
+                inline_end_idx = self._safe_coordinate_to_index(
+                    inline_axis, inline_range[1], num_inlines_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 inline_start_idx = 0
-                inline_end_idx = layout.getDimensionNumSamples(self.INLINE_DIM)
+                inline_end_idx = num_inlines_total
                 inline_range = survey["inline_range"]
 
+            crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
             if crossline_range:
-                crossline_axis = layout.getAxisDescriptor(self.CROSSLINE_DIM)
-                crossline_start_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[0])))
-                crossline_end_idx = int(crossline_axis.coordinateToSampleIndex(float(crossline_range[1]))) + 1
+                crossline_start_idx = self._safe_coordinate_to_index(
+                    crossline_axis, crossline_range[0], num_crosslines_total - 1
+                )
+                crossline_end_idx = self._safe_coordinate_to_index(
+                    crossline_axis, crossline_range[1], num_crosslines_total - 1
+                ) + 1  # Exclusive upper bound
             else:
                 crossline_start_idx = 0
-                crossline_end_idx = layout.getDimensionNumSamples(self.CROSSLINE_DIM)
+                crossline_end_idx = num_crosslines_total
                 crossline_range = survey["crossline_range"]
+
+            # Validate ranges
+            if inline_start_idx >= inline_end_idx:
+                return {
+                    "error": f"Invalid inline range: start {inline_start_idx} >= end {inline_end_idx}"
+                }
+            if crossline_start_idx >= crossline_end_idx:
+                return {
+                    "error": f"Invalid crossline range: start {crossline_start_idx} >= end {crossline_end_idx}"
+                }
 
             # Define voxel range
             voxel_min = (sample_index, crossline_start_idx, inline_start_idx)
@@ -1503,7 +1563,12 @@ class VDSClient:
                 lod=0,
                 channel=0
             )
-            request.waitForCompletion()
+
+            # Wait for completion (async-safe - runs in thread pool)
+            await self._safe_wait_for_completion(request)
+
+            # Get no-value sentinel for proper null detection
+            no_value = self._get_no_value_sentinel(layout, channel=0)
 
             # Calculate statistics
             result = {
@@ -1519,36 +1584,53 @@ class VDSClient:
                 "data_summary": {
                     "amplitude_range": [float(buffer.min()), float(buffer.max())],
                     "mean_amplitude": float(buffer.mean()),
-                    "std_amplitude": float(buffer.std())
+                    "std_amplitude": float(buffer.std()),
+                    "null_pixels": self._count_null_traces(buffer, no_value, axis=0)  # For 2D timeslice
                 },
                 "note": "Real data extracted from VDS file"
             }
 
             # Optionally include raw data and provenance for validation
+            # Check payload size to prevent huge responses
             if return_data:
-                result["data"] = buffer.tolist()
+                total_elements = buffer.size
+                if total_elements > self.max_data_elements:
+                    logger.warning(
+                        f"Data too large for survey={survey_id}, time={time_value}: "
+                        f"{total_elements} elements (max: {self.max_data_elements}). "
+                        f"Not returning raw data."
+                    )
+                    result["data_warning"] = (
+                        f"Data too large ({total_elements} elements, "
+                        f"max {self.max_data_elements}). Raw data not included."
+                    )
+                else:
+                    result["data"] = buffer.tolist()
 
-                # Add provenance tracking
-                integrity_agent = get_integrity_agent()
-                source_info = {
-                    "vds_file": survey.get("file_path", "unknown"),
-                    "survey_id": survey_id,
-                    "survey_name": survey.get("name", "unknown")
-                }
-                extraction_params = {
-                    "section_type": "timeslice",
-                    "section_number": time_value,
-                    "inline_range": result["inline_range"],
-                    "crossline_range": result["crossline_range"]
-                }
-                result["provenance"] = integrity_agent.create_provenance_record(
-                    buffer, source_info, extraction_params
-                )
+                    # Add provenance tracking (only when data is returned)
+                    integrity_agent = get_integrity_agent()
+                    source_info = {
+                        "vds_file": survey.get("file_path", "unknown"),
+                        "survey_id": survey_id,
+                        "survey_name": survey.get("name", "unknown")
+                    }
+                    extraction_params = {
+                        "section_type": "timeslice",
+                        "section_number": time_value,
+                        "inline_range": result["inline_range"],
+                        "crossline_range": result["crossline_range"]
+                    }
+                    result["provenance"] = integrity_agent.create_provenance_record(
+                        buffer, source_info, extraction_params
+                    )
 
             return result
 
         except Exception as e:
-            logger.error(f"Error extracting timeslice: {e}")
+            logger.error(
+                f"Error extracting timeslice for survey={survey_id}, time={time_value}: {e}",
+                exc_info=True
+            )
             return {"error": f"Data extraction failed: {str(e)}"}
 
     async def extract_timeslice_image(
