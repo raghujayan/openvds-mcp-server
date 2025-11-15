@@ -26,3 +26,4 @@ matplotlib>=3.7.0
 elasticsearch>=8.11.0,<9.0
 aiohttp>=3.9.0
 Pillow>=10.1.0
+psutil>=5.9.0

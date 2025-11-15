@@ -322,7 +322,7 @@ class OpenVDSMCPServer:
 
 IMPORTANT: This tool is ONLY for extracting a SINGLE inline. If the user wants multiple inlines, ranges (e.g. '51000 to 59000'), patterns (e.g. 'every 100th'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.
 
-PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.
+PRIVACY: Set send_to_claude=true when user wants to SEE or ANALYZE images. Set to false only for programmatic/API usage where images aren't needed.
 
 📊 UNITS REQUIREMENT:
 ALL statistics returned include units or explicit "(unitless)" notation:
@@ -390,8 +390,8 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                             },
                             "send_to_claude": {
                                 "type": "boolean",
-                                "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
-                                "default": False
+                                "description": "Set to true when user wants to SEE images (visual QC, analysis, display). Set to false only for programmatic use where images aren't needed. Default true for conversational use.",
+                                "default": True
                             }
                         },
                         "required": ["survey_id", "inline_number"]
@@ -403,7 +403,7 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
 
 IMPORTANT: This tool is ONLY for extracting a SINGLE crossline. If the user wants multiple crosslines, ranges, patterns (e.g. 'every Nth', 'skipping 100'), or any bulk operation, you MUST use 'agent_start_extraction' instead. The system will automatically detect and route bulk operations to the agent.
 
-PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.
+PRIVACY: Set send_to_claude=true when user wants to SEE or ANALYZE images. Set to false only for programmatic/API usage where images aren't needed.
 
 📊 UNITS REQUIREMENT:
 ALL statistics returned include units or explicit "(unitless)" notation:
@@ -455,8 +455,8 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                             },
                             "send_to_claude": {
                                 "type": "boolean",
-                                "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
-                                "default": False
+                                "description": "Set to true when user wants to SEE images (visual QC, analysis, display). Set to false only for programmatic use where images aren't needed. Default true for conversational use.",
+                                "default": True
                             }
                         },
                         "required": ["survey_id", "crossline_number"]
@@ -466,7 +466,7 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                     name="extract_timeslice_image",
                     description="""Extract a time/depth slice (map view) and generate a seismic image visualization. Returns PNG image showing amplitude distribution across the survey area at a specific time/depth.
 
-PRIVACY: By default, images are NOT sent to Anthropic - only metadata is returned. Set send_to_claude=true ONLY if user explicitly consents to sending image to Claude for visual analysis.
+PRIVACY: Set send_to_claude=true when user wants to SEE or ANALYZE images. Set to false only for programmatic/API usage where images aren't needed.
 
 📊 UNITS REQUIREMENT:
 ALL statistics returned include units or explicit "(unitless)" notation:
@@ -524,8 +524,8 @@ ALWAYS specify units or explicitly state (unitless) in all responses!""",
                             },
                             "send_to_claude": {
                                 "type": "boolean",
-                                "description": "🔒 PRIVACY CONTROL: Set to true ONLY if user explicitly consents to sending image to Anthropic/Claude for visual analysis. Default false (metadata only, no image sent to Anthropic). Ask user before setting true.",
-                                "default": False
+                                "description": "Set to true when user wants to SEE images (visual QC, analysis, display). Set to false only for programmatic use where images aren't needed. Default true for conversational use.",
+                                "default": True
                             }
                         },
                         "required": ["survey_id", "time_value"]
@@ -757,6 +757,108 @@ Example:
                             }
                         },
                         "required": ["statistics"]
+                    }
+                ),
+                Tool(
+                    name="validate_vds_metadata",
+                    description="""⚠️ CRITICAL ENHANCED - Validate metadata claims with intelligent field matching and WKT parsing.
+
+NEW FEATURES (v2.0):
+🎯 Smart field matching - Automatically searches multiple locations and aliases
+🗺️ WKT parsing - Extracts EPSG codes, datum, projection from WKT strings
+🔍 Fuzzy matching - Handles case variations and unit equivalents (ms=milliseconds)
+📊 Confidence scoring - Returns confidence levels for partial matches
+💡 Suggestions - Provides helpful suggestions when fields not found
+🔬 Discovery mode - Explore available metadata without validation
+
+WHEN TO USE:
+✅ Validating CRS claims (projection, UTM zone, EPSG, datum)
+✅ Validating dimension ranges (inline/crossline/sample extent)
+✅ Validating import metadata (filenames, timestamps)
+✅ Exploring what metadata is available (discovery mode)
+
+VALIDATION MODES:
+- "crs": Validates CRS/projection claims with WKT parsing
+- "dimensions": Validates dimension ranges and counts
+- "import_info": Validates import metadata
+- "discover": Explores available metadata (no claims needed)
+- "all": Validates all provided claims (default)
+
+SMART MATCHING FEATURES:
+- Searches multiple locations: root, nested paths, WKT strings
+- Field aliases: "epsg" = "epsg_code" = "srs_code"
+- Unit equivalence: "ms" = "milliseconds", "m" = "meters"
+- Case-insensitive: "WGS84" = "wgs84" = "WGS 84"
+- Fuzzy matching: "ED50 / UTM zone 31N" ≈ "ED50 / UTM Zone 31N"
+
+RESPONSE FORMAT:
+{
+  "overall_status": "PASS" | "MOSTLY_VALID" | "PARTIALLY_VALID" | "FAIL",
+  "validation_score": 0.85,  // 0.0-1.0
+  "total_claims": 10,
+  "passed": 7,
+  "partial": 2,
+  "failed": 1,
+  "details": {
+    "crs.epsg_code": {
+      "status": "PASS",
+      "claimed": 23031,
+      "actual": 23031,
+      "source": "crs_info.crsWkt (parsed from WKT)",
+      "confidence": 1.0,
+      "match_type": "exact"
+    }
+  }
+}
+
+DISCOVERY MODE EXAMPLE:
+validation_type="discover" → Returns all available CRS metadata with WKT parsing
+
+Example:
+  Claimed: {"crs": {"projection": "UTM 31N", "epsg_code": 23031}}
+  Tool finds: Parses WKT string, extracts EPSG:23031 → PASS with confidence 1.0
+  Tool suggests: If not found, shows similar fields and alternative paths
+""",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "claimed_metadata": {
+                                "type": "object",
+                                "description": """Metadata claims to validate (optional for discovery mode). Structure:
+{
+  "crs": {"utm_zone": 31, "hemisphere": "N", "datum": "WGS84", "epsg_code": 23031, ...},
+  "dimensions": {"Inline": {"min": 51000, "max": 59001, "count": 8002}, ...},
+  "import_info": {"input_filename": "survey.sgy", ...}
+}""",
+                                "additionalProperties": True
+                            },
+                            "validation_type": {
+                                "type": "string",
+                                "description": "Validation type: 'crs', 'dimensions', 'import_info', 'discover' (explore metadata), or 'all'",
+                                "enum": ["crs", "dimensions", "import_info", "discover", "all"],
+                                "default": "all"
+                            },
+                            "smart_matching": {
+                                "type": "boolean",
+                                "description": "Enable intelligent field matching with aliases and fuzzy matching (default: true)",
+                                "default": True
+                            },
+                            "parse_wkt": {
+                                "type": "boolean",
+                                "description": "Enable WKT (Well-Known Text) parsing for CRS data (default: true)",
+                                "default": True
+                            },
+                            "discovery_mode": {
+                                "type": "boolean",
+                                "description": "Explore available metadata without validation (default: false). Can also use validation_type='discover'",
+                                "default": False
+                            }
+                        },
+                        "required": ["survey_id"]
                     }
                 )
             ]
@@ -1225,6 +1327,24 @@ Example:
                     # Check consistency
                     integrity_agent = get_integrity_agent()
                     result = integrity_agent.check_statistical_consistency(statistics)
+
+                elif name == "validate_vds_metadata":
+                    survey_id = arguments["survey_id"]
+                    claimed_metadata = arguments.get("claimed_metadata")
+                    validation_type = arguments.get("validation_type", "all")
+                    smart_matching = arguments.get("smart_matching", True)
+                    parse_wkt = arguments.get("parse_wkt", True)
+                    discovery_mode = arguments.get("discovery_mode", False)
+
+                    # Validate metadata using enhanced VDSClient method
+                    result = await self.vds_client.validate_vds_metadata(
+                        survey_id=survey_id,
+                        claimed_metadata=claimed_metadata,
+                        validation_type=validation_type,
+                        smart_matching=smart_matching,
+                        parse_wkt=parse_wkt,
+                        discovery_mode=discovery_mode
+                    )
 
                 else:
                     result = {"error": f"Unknown tool: {name}"}

@@ -488,26 +488,69 @@ class VDSClient:
             return None
     
     def _get_vds_handle(self, survey_id: str) -> Optional[Any]:
-        """Get or open a VDS handle for the survey"""
+        """
+        Get or open a VDS handle for the survey
+
+        Enhanced to support multiple resolution strategies:
+        1. Check cache first (fastest)
+        2. Try exact file_path match (most reliable)
+        3. Fall back to survey ID match (backwards compatible)
+        """
+        # Check cache first
         if survey_id in self.vds_handles:
             return self.vds_handles[survey_id]
 
-        # Find survey and open it
-        survey = next((s for s in self.available_surveys if s["id"] == survey_id), None)
-        if not survey or survey.get("file_path", "").startswith("demo://"):
+        # Strategy 1: Try exact file path match first (for full paths)
+        # This handles cases where survey_id is actually a full file path
+        survey = next((s for s in self.available_surveys if s.get("file_path") == survey_id), None)
+
+        # Strategy 2: Fall back to ID-based match (for basenames)
+        if not survey:
+            survey = next((s for s in self.available_surveys if s.get("id") == survey_id), None)
+
+        # Strategy 3: Try partial path match (handles both /vds-data/ and /Volumes/Hue/ prefixes)
+        if not survey and "/" in survey_id:
+            # Extract basename from provided survey_id
+            basename = survey_id.split("/")[-1].replace(".vds", "")
+            survey = next((s for s in self.available_surveys if s.get("id") == basename), None)
+            if survey:
+                logger.info(f"Resolved survey_id via basename extraction: {survey_id} -> {basename}")
+
+        if not survey:
+            logger.error(f"Survey not found in available_surveys: {survey_id}")
+            logger.error(f"  Available survey count: {len(self.available_surveys)}")
+            if self.available_surveys:
+                logger.error(f"  Sample survey IDs: {[s.get('id', 'NO_ID') for s in self.available_surveys[:5]]}")
+            return None
+
+        if survey.get("file_path", "").startswith("demo://"):
+            logger.debug(f"Skipping demo survey: {survey_id}")
             return None
 
         try:
             # Translate ES path to host path
             file_path = self._translate_path(survey["file_path"])
             logger.info(f"Opening VDS file: {file_path}")
+            logger.info(f"  Survey ID: {survey_id}")
+            logger.info(f"  Matched survey: {survey.get('id')}")
+            logger.info(f"  Original ES path: {survey['file_path']}")
+
             vds_handle = openvds.open(file_path)
+
+            # Cache using the original survey_id (whatever was requested)
             self.vds_handles[survey_id] = vds_handle
+
+            # Also cache using the survey's official ID (for consistency)
+            if survey.get("id") != survey_id:
+                self.vds_handles[survey["id"]] = vds_handle
+
             return vds_handle
+
         except Exception as e:
-            logger.error(f"Failed to open VDS file for {survey_id}: {e}")
-            logger.error(f"  Original path: {survey.get('file_path')}")
-            logger.error(f"  Translated path: {file_path if 'file_path' in locals() else 'N/A'}")
+            logger.error(f"Failed to open VDS file for survey_id '{survey_id}': {e}")
+            logger.error(f"  Matched survey ID: {survey.get('id')}")
+            logger.error(f"  Original ES path: {survey.get('file_path')}")
+            logger.error(f"  Translated host path: {file_path if 'file_path' in locals() else 'N/A'}")
             return None
     
     async def search_surveys(
@@ -1985,6 +2028,147 @@ class VDSClient:
             },
             "cache_info": "Cached for 15 minutes"
         }
+
+    async def validate_vds_metadata(
+        self,
+        survey_id: str,
+        claimed_metadata: Optional[Dict[str, Any]] = None,
+        validation_type: str = "all",
+        smart_matching: bool = True,
+        parse_wkt: bool = True,
+        discovery_mode: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Enhanced VDS metadata validation with intelligent field matching
+
+        Features:
+        - Multi-location field search with aliases
+        - WKT parsing for CRS data
+        - Semantic value matching (fuzzy, unit equivalence)
+        - Enhanced responses with confidence scores and suggestions
+        - Discovery mode for metadata exploration
+        - Batch validation with overall scoring
+
+        Args:
+            survey_id: Survey identifier
+            claimed_metadata: Dict with metadata claims (optional for discovery mode)
+            validation_type: "crs", "dimensions", "import_info", "discover", or "all"
+            smart_matching: Enable intelligent field matching (default: True)
+            parse_wkt: Enable WKT parsing for CRS data (default: True)
+            discovery_mode: Explore metadata without validation (default: False)
+
+        Returns (validation mode):
+            {
+                "overall_status": "PASS" | "MOSTLY_VALID" | "PARTIALLY_VALID" | "FAIL",
+                "validation_score": 0.0-1.0,
+                "weighted_score": 0.0-1.0,
+                "total_claims": int,
+                "passed": int,
+                "partial": int,
+                "failed": int,
+                "not_found": int,
+                "details": {field_name: {status, claimed, actual, source, confidence, ...}, ...}
+            }
+
+        Returns (discovery mode):
+            {
+                "mode": "discovery",
+                "category": str,
+                "available_fields": {...},
+                "suggested_claims": {...}
+            }
+        """
+        from metadata_validator_enhanced import EnhancedMetadataValidator
+
+        # Get survey metadata
+        survey = await self.get_survey_metadata(survey_id, include_stats=False)
+        if "error" in survey:
+            return {
+                "overall_status": "ERROR",
+                "validation_type": validation_type,
+                "survey_id": survey_id,
+                "details": f"Failed to get survey: {survey['error']}"
+            }
+
+        # Open VDS file
+        vds_handle = self._get_vds_handle(survey_id)
+        if not vds_handle:
+            return {
+                "overall_status": "ERROR",
+                "validation_type": validation_type,
+                "survey_id": survey_id,
+                "details": "Failed to open VDS file"
+            }
+
+        try:
+            layout = openvds.getLayout(vds_handle)
+
+            # Create enhanced validator
+            validator = EnhancedMetadataValidator(
+                vds_handle,
+                layout,
+                smart_matching=smart_matching,
+                parse_wkt=parse_wkt
+            )
+
+            # Discovery mode - explore metadata without validation
+            if discovery_mode or validation_type == "discover":
+                category = validation_type if validation_type != "discover" else "all"
+                result = validator.discover_metadata(category=category)
+                result["survey_id"] = survey_id
+                return result
+
+            # Validation mode - validate claimed metadata
+            if not claimed_metadata:
+                return {
+                    "overall_status": "ERROR",
+                    "survey_id": survey_id,
+                    "details": "claimed_metadata required for validation mode"
+                }
+
+            # Get all available metadata for validation
+            all_metadata = validator._get_all_metadata()
+
+            # Flatten claimed_metadata for batch validation
+            flat_claims = {}
+
+            if validation_type in ["crs", "all"] and "crs" in claimed_metadata:
+                for field, value in claimed_metadata["crs"].items():
+                    flat_claims[f"crs.{field}"] = value
+
+            if validation_type in ["dimensions", "all"] and "dimensions" in claimed_metadata:
+                # For dimensions, add each dimension's fields
+                for dim_name, dim_data in claimed_metadata["dimensions"].items():
+                    if isinstance(dim_data, dict):
+                        for field, value in dim_data.items():
+                            flat_claims[f"dimensions.{dim_name}.{field}"] = value
+
+            if validation_type in ["import_info", "all"] and "import_info" in claimed_metadata:
+                for field, value in claimed_metadata["import_info"].items():
+                    flat_claims[f"import_info.{field}"] = value
+
+            # Use batch validation with scoring
+            result = validator.validate_batch(
+                claims=flat_claims,
+                metadata=all_metadata
+            )
+
+            # Add survey context
+            result["survey_id"] = survey_id
+            result["validation_type"] = validation_type
+            result["smart_matching"] = smart_matching
+            result["parse_wkt"] = parse_wkt
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error validating metadata for survey {survey_id}: {e}", exc_info=True)
+            return {
+                "overall_status": "ERROR",
+                "validation_type": validation_type,
+                "survey_id": survey_id,
+                "details": f"Validation failed: {str(e)}"
+            }
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache performance statistics"""

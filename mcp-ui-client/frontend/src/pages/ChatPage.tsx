@@ -8,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import { Message, ChatMessage, ContentBlock, TextContent, ToolUseContent, ToolResultContent, ImageContent } from '../types/chat';
 import { sendMessage } from '../services/chatService';
 import { CollapsibleToolCall, CollapsibleImage } from '../components';
+import { SystemStatusPanel } from '../components/SystemStatusPanel';
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -17,6 +18,7 @@ export default function ChatPage() {
   const [toolCalls, setToolCalls] = useState<Array<{ id: string; name: string; input: any; status: string }>>([]);
   const [responseStartTime, setResponseStartTime] = useState<number | null>(null);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [isStatusPanelOpen, setIsStatusPanelOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -352,6 +354,49 @@ export default function ChatPage() {
             <p style={{ color: '#9ca3af', fontSize: '10px', margin: 0 }}>AI-Powered Seismic Data Exploration</p>
           </div>
         </div>
+
+        {/* Status Button */}
+        <button
+          onClick={() => setIsStatusPanelOpen(true)}
+          style={{
+            padding: '8px 16px',
+            backgroundColor: '#3a4149',
+            border: '1px solid rgba(255, 255, 255, 0.2)',
+            borderRadius: '8px',
+            color: '#cedfe7',
+            fontSize: '14px',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            transition: 'all 0.2s'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = '#4a5259';
+            e.currentTarget.style.borderColor = '#cedfe7';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = '#3a4149';
+            e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+          }}
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M20 7h-9"></path>
+            <path d="M14 17H5"></path>
+            <circle cx="17" cy="17" r="3"></circle>
+            <circle cx="7" cy="7" r="3"></circle>
+          </svg>
+          System Status
+        </button>
       </header>
 
       {/* Messages */}
@@ -551,6 +596,12 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
+
+      {/* System Status Panel */}
+      <SystemStatusPanel
+        isOpen={isStatusPanelOpen}
+        onClose={() => setIsStatusPanelOpen(false)}
+      />
     </div>
   );
 }
