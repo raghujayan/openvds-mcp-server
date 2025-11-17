@@ -7,7 +7,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message, ChatMessage, ContentBlock, TextContent, ToolUseContent, ToolResultContent, ImageContent } from '../types/chat';
 import { sendMessage } from '../services/chatService';
-import { CollapsibleToolCall, CollapsibleImage } from '../components';
+import { CollapsibleToolCall, CollapsibleImage, CollapsibleValidationReport } from '../components';
 import { SystemStatusPanel } from '../components/SystemStatusPanel';
 
 export default function ChatPage() {
@@ -188,6 +188,30 @@ export default function ChatPage() {
     return content.map((block, index) => {
       if (block.type === 'text') {
         const textBlock = block as TextContent;
+
+        // Detect validation report
+        const isValidationReport = textBlock.text.includes('VALIDATION REPORT') ||
+                                   textBlock.text.includes('Seismic Cop');
+
+        if (isValidationReport) {
+          // Extract verdict
+          let verdict: 'APPROVED' | 'WARNING' | 'REJECTED' = 'APPROVED';
+          if (textBlock.text.includes('❌ REJECTED') || textBlock.text.includes('REJECTED')) {
+            verdict = 'REJECTED';
+          } else if (textBlock.text.includes('⚠️ WARNING') || textBlock.text.includes('WARNING')) {
+            verdict = 'WARNING';
+          }
+
+          return (
+            <CollapsibleValidationReport
+              key={index}
+              content={textBlock.text}
+              verdict={verdict}
+            />
+          );
+        }
+
+        // Regular markdown rendering for non-validation text
         return (
           <div key={index} className="prose prose-sm" style={{ maxWidth: 'none', marginLeft: 0, marginRight: 0 }}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
