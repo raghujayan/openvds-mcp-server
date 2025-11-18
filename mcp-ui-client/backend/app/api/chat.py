@@ -19,6 +19,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..claude_client import get_claude_client
 from ..mcp_client import get_mcp_client
+from ..validation_wrapper import get_validation_wrapper
 
 logger = logging.getLogger("chat-api")
 from ..models.chat import (
@@ -157,6 +158,10 @@ Always provide context about what you're doing and explain the seismic data you 
                 # Track images from tool results to include in final response
                 tool_result_images: List[Dict[str, Any]] = []
 
+                # Track tool outputs for validation
+                all_tool_outputs: Dict[str, Any] = {}
+                user_query = anthropic_messages[0]["content"] if anthropic_messages else ""
+
                 while iteration < max_tool_iterations:
                     iteration += 1
 
@@ -175,12 +180,51 @@ Always provide context about what you're doing and explain the seismic data you 
                             message_data = event.get("message", {})
                             content = message_data.get("content", [])
 
-                            # If this is the final iteration (no tool calls), append images from tool results
+                            # Check if there are tool calls
                             has_tool_calls = any(block.get("type") == "tool_use" for block in content)
-                            if not has_tool_calls and tool_result_images:
-                                # Inject images into the message content
-                                logger.info(f"Appending {len(tool_result_images)} images to final response")
-                                event["message"]["content"] = list(content) + tool_result_images
+
+                            # If this is the final iteration (no tool calls), process images and validation
+                            if not has_tool_calls:
+                                # Append images from tool results
+                                if tool_result_images:
+                                    logger.info(f"Appending {len(tool_result_images)} images to final response")
+                                    content = list(content) + tool_result_images
+
+                                # Run validation and append footer to message content
+                                response_text = ""
+                                for block in content:
+                                    if block.get("type") == "text":
+                                        response_text += block.get("text", "")
+
+                                try:
+                                    validation_wrapper = get_validation_wrapper()
+                                    validation_result = validation_wrapper.validate_response(
+                                        response_text=response_text,
+                                        tool_outputs=all_tool_outputs,
+                                        context=user_query
+                                    )
+
+                                    if validation_result.get("validated"):
+                                        logger.info(f"✅ Validation applied: {validation_result.get('verdict')} - "
+                                                  f"{validation_result.get('summary', {}).get('passed', 0)} passed, "
+                                                  f"{validation_result.get('summary', {}).get('failed', 0)} failed, "
+                                                  f"{validation_result.get('summary', {}).get('warnings', 0)} warnings")
+
+                                        validated_text = validation_result.get("validated_text", response_text)
+                                        if validated_text != response_text:
+                                            validation_footer = validated_text[len(response_text):]
+                                            logger.info(f"Injecting validation footer ({len(validation_footer)} chars) into message content")
+
+                                            # Find the last text block and append footer to it
+                                            for i in range(len(content) - 1, -1, -1):
+                                                if content[i].get("type") == "text":
+                                                    content[i]["text"] += validation_footer
+                                                    break
+                                except Exception as e:
+                                    logger.error(f"Validation error: {e}", exc_info=True)
+
+                                # Update message content with images and validation footer
+                                event["message"]["content"] = content
 
                         # Forward event to client
                         yield {
@@ -244,6 +288,9 @@ Always provide context about what you're doing and explain the seismic data you 
                                     logger.info(f"[BEFORE] About to call MCP tool: {tool_name}")
                                     result = await mcp.call_tool(tool_name, tool_input)
                                     logger.info(f"[AFTER] MCP tool {tool_name} returned result type: {type(result)}, length: {len(result) if isinstance(result, (list, dict, str)) else 'N/A'}")
+
+                                    # Store raw tool output for validation
+                                    all_tool_outputs[tool_name] = result
 
                                     # Handle different result types
                                     # Check if result is a list of MCP content blocks (ImageContent, TextContent)

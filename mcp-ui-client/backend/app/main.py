@@ -41,6 +41,15 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize MCP client: {e}")
         raise
 
+    # Pre-load validation system to avoid blocking during requests
+    try:
+        logger.info("Pre-loading validation system...")
+        from .validation_wrapper import get_validation_wrapper
+        wrapper = get_validation_wrapper()
+        logger.info(f"Validation system pre-loaded (available: {wrapper.cop is not None})")
+    except Exception as e:
+        logger.warning(f"Validation system not available: {e}")
+
     yield
 
     # Shutdown
@@ -191,6 +200,9 @@ async def get_system_status():
                 "agent_pause": "Pause autonomous agent execution",
                 "agent_resume": "Resume paused autonomous agent",
                 "agent_get_results": "Get results from completed agent session",
+                "compute_global_stats": "[COMPUTE] Sample volume and compute global amplitude statistics (5-10s)",
+                "detect_outliers": "[COMPUTE] Detect amplitude outliers using z-score analysis with clustering (5-15s)",
+                "extract_window": "[COMPUTE] Extract sub-volume and compare to background statistics (3-8s)",
                 "validate_extracted_statistics": "Validate claimed statistics against actual VDS data",
                 "verify_spatial_coordinates": "Verify coordinates are within survey bounds",
                 "check_statistical_consistency": "Check if statistics are mathematically consistent",
@@ -248,6 +260,79 @@ async def get_system_status():
             "status": "connected"
         }
 
+        # Agent categories with descriptions
+        agents_info = {
+            "categories": [
+                {
+                    "category": "Compute Agents (Phase 1)",
+                    "description": "Fast numerical computation agents that return real data instead of hypothesizing. Prevents hallucinations by computing actual statistics.",
+                    "execution_time": "3-15 seconds",
+                    "agents": [
+                        {
+                            "name": "GlobalSamplerAgent",
+                            "tool": "compute_global_stats",
+                            "description": "Samples seismic volume with decimation and computes global amplitude statistics (min, max, mean, std, percentiles, histogram)",
+                            "prevents": "Hallucinations like 'amplitudes range from X to Y' without data",
+                            "execution_time": "5-10 seconds"
+                        },
+                        {
+                            "name": "OutlierDetectorAgent",
+                            "tool": "detect_outliers",
+                            "description": "Z-score based anomaly detection with spatial clustering. Returns outlier coordinates and clusters",
+                            "prevents": "Hallucinations like 'bright spots at inline 10350' without analysis",
+                            "execution_time": "5-15 seconds"
+                        },
+                        {
+                            "name": "WindowExtractorAgent",
+                            "tool": "extract_window",
+                            "description": "Extracts sub-volume and compares to global background statistics. Returns z-score and percentile rank",
+                            "prevents": "Hallucinations like 'this zone has higher amplitudes' without comparison",
+                            "execution_time": "3-8 seconds"
+                        }
+                    ]
+                },
+                {
+                    "category": "Extraction Agents",
+                    "description": "Autonomous agents for complex multi-step extractions from natural language instructions",
+                    "agents": [
+                        {
+                            "name": "ExtractionAgent",
+                            "tool": "agent_start_extraction",
+                            "description": "Orchestrates multi-step extractions, manages sessions, supports pause/resume",
+                            "features": ["Natural language parsing", "Step planning", "Progress tracking"]
+                        }
+                    ]
+                },
+                {
+                    "category": "Validation Agents",
+                    "description": "Data integrity and anti-hallucination validation tools",
+                    "agents": [
+                        {
+                            "name": "StatisticsValidator",
+                            "tool": "validate_extracted_statistics",
+                            "description": "Validates claimed statistics against actual VDS data"
+                        },
+                        {
+                            "name": "CoordinateVerifier",
+                            "tool": "verify_spatial_coordinates",
+                            "description": "Verifies coordinates are within survey bounds"
+                        },
+                        {
+                            "name": "ConsistencyChecker",
+                            "tool": "check_statistical_consistency",
+                            "description": "Checks if statistics are mathematically consistent"
+                        },
+                        {
+                            "name": "MetadataValidator",
+                            "tool": "validate_vds_metadata",
+                            "description": "Validates metadata claims (SEGY headers, CRS, dimensions)"
+                        }
+                    ]
+                }
+            ],
+            "total_agents": 10
+        }
+
         return {
             "services": {
                 "backend": backend_status,
@@ -258,6 +343,7 @@ async def get_system_status():
                 "vds_mount": vds_mount_status,
                 "license_server": license_status
             },
+            "agents": agents_info,
             "tools": {
                 "available": len(tools_list),
                 "list": tools_list

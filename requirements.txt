@@ -7,3 +7,4 @@ aiohttp>=3.9.0
 elasticsearch>=8.11.0,<9.0.0
 matplotlib>=3.7.0
 Pillow>=10.0.0
+scipy>=1.10.0

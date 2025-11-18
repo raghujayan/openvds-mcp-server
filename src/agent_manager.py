@@ -18,6 +18,12 @@ from dataclasses import dataclass, asdict
 import logging
 from enum import Enum
 
+# Import Phase 1 Compute Agents
+try:
+    from .compute_agents import GlobalSamplerAgent, OutlierDetectorAgent, WindowExtractorAgent
+except ImportError:
+    from compute_agents import GlobalSamplerAgent, OutlierDetectorAgent, WindowExtractorAgent
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,7 +75,7 @@ class SeismicAgentManager:
     def __init__(self, openvds_tools):
         """
         Initialize the agent manager.
-        
+
         Args:
             openvds_tools: Your existing OpenVDS tools module/class
         """
@@ -77,8 +83,13 @@ class SeismicAgentManager:
         self.sessions: Dict[str, AgentSession] = {}
         self.active_session_id: Optional[str] = None
         self._background_task: Optional[asyncio.Task] = None
-        
-        logger.info("SeismicAgentManager initialized")
+
+        # Initialize Phase 1 Compute Agents
+        self.global_sampler = GlobalSamplerAgent(vds_client=openvds_tools)
+        self.outlier_detector = OutlierDetectorAgent(vds_client=openvds_tools)
+        self.window_extractor = WindowExtractorAgent(vds_client=openvds_tools)
+
+        logger.info("SeismicAgentManager initialized (with Phase 1 compute agents)")
     
     async def start_extraction(
         self,

@@ -2174,6 +2174,92 @@ class VDSClient:
         """Get cache performance statistics"""
         return self.cache.get_stats()
 
+    def extract_crs_from_vds(self, vds_handle) -> Optional[Dict[str, Any]]:
+        """
+        Extract CRS (Coordinate Reference System) metadata from VDS file internal structure
+
+        This is the SOURCE OF TRUTH for CRS validation - data comes from VDS file itself,
+        not from external metadata sources.
+
+        Args:
+            vds_handle: Open VDS handle
+
+        Returns:
+            Dict with CRS metadata:
+            {
+                'crs_wkt': str,           # Well-Known Text representation
+                'crs_id': int,            # Shell CRS ID
+                'crs_units': str,         # Map units (e.g., 'ft', 'm')
+                'origin': tuple,          # Survey origin (x, y)
+                'inline_spacing': tuple,  # Inline vector (dx, dy)
+                'crossline_spacing': tuple, # Crossline vector (dx, dy)
+                'source': 'vds_internal'  # Source identifier
+            }
+
+            Returns None if CRS metadata not available
+        """
+        if not HAS_OPENVDS or not vds_handle:
+            return None
+
+        try:
+            layout = openvds.getLayout(vds_handle)
+            crs_data = {}
+
+            # Extract CRSWkt (Well-Known Text)
+            try:
+                crs_wkt = layout.getMetadataString("SurveyCoordinateSystem", "CRSWkt")
+                crs_data['crs_wkt'] = crs_wkt
+            except:
+                pass
+
+            # Extract Shell CRS ID
+            try:
+                crs_id = layout.getMetadataInt("ShellCRS", "CRSID")
+                crs_data['crs_id'] = crs_id
+            except:
+                pass
+
+            # Extract CRS map units
+            try:
+                crs_units = layout.getMetadataString("ShellCRS", "CRSMapUnits")
+                crs_data['crs_units'] = crs_units
+            except:
+                pass
+
+            # Extract survey origin
+            try:
+                origin = layout.getMetadataDoubleVector2("SurveyCoordinateSystem", "Origin")
+                crs_data['origin'] = tuple(origin)
+            except:
+                pass
+
+            # Extract inline spacing (grid vectors)
+            try:
+                inline_spacing = layout.getMetadataDoubleVector2("SurveyCoordinateSystem", "InlineSpacing")
+                crs_data['inline_spacing'] = tuple(inline_spacing)
+            except:
+                pass
+
+            # Extract crossline spacing (grid vectors)
+            try:
+                crossline_spacing = layout.getMetadataDoubleVector2("SurveyCoordinateSystem", "CrosslineSpacing")
+                crs_data['crossline_spacing'] = tuple(crossline_spacing)
+            except:
+                pass
+
+            # Mark source
+            crs_data['source'] = 'vds_internal'
+
+            # Return None if no CRS metadata found
+            if not any(k in crs_data for k in ['crs_wkt', 'crs_id', 'crs_units']):
+                return None
+
+            return crs_data
+
+        except Exception as e:
+            logger.error(f"Error extracting CRS from VDS: {e}")
+            return None
+
     def __del__(self):
         """Clean up VDS handles on deletion"""
         for handle in self.vds_handles.values():

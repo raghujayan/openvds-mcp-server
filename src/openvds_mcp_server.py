@@ -44,13 +44,13 @@ try:
     from .agent_manager import SeismicAgentManager
     from .data_integrity import get_integrity_agent
     from .bulk_operation_router import get_router
-    from .domain_warnings import get_warning_system, check_response_for_domain_issues
+    from .automatic_validation import validate_response, get_validation_wrapper, ValidationContext
 except ImportError:
     from vds_client import VDSClient
     from agent_manager import SeismicAgentManager
     from data_integrity import get_integrity_agent
     from bulk_operation_router import get_router
-    from domain_warnings import get_warning_system, check_response_for_domain_issues
+    from automatic_validation import validate_response, get_validation_wrapper, ValidationContext
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("openvds-mcp-server")
@@ -58,14 +58,99 @@ logger = logging.getLogger("openvds-mcp-server")
 
 class OpenVDSMCPServer:
     """MCP Server for OpenVDS data access"""
-    
+
     def __init__(self):
         self.server = Server("openvds-mcp-server")
         self.vds_client: Optional[VDSClient] = None
         self.agent_manager: Optional[SeismicAgentManager] = None
         self.bulk_router = get_router()  # Automatic bulk operation routing
         self.setup_handlers()
-    
+
+    def _enrich_with_validation_metadata(
+        self,
+        result: dict,
+        survey_id: Optional[str] = None,
+        tool_name: Optional[str] = None
+    ) -> dict:
+        """
+        Enrich tool result with COMPLETE Seismic Cop validation metadata
+
+        Adds ALL metadata needed for comprehensive validation:
+        - VDS CRS metadata (SOURCE OF TRUTH for CRS validation)
+        - Survey bounds (for coordinate validation)
+        - Survey metadata (for cross-survey checks)
+        - Tool provenance (for tracking data sources)
+
+        Args:
+            result: Tool result dictionary
+            survey_id: Survey identifier
+            tool_name: Name of the tool that generated this result
+
+        Returns:
+            Enriched result with comprehensive validation metadata
+        """
+        validation_metadata = {
+            "enabled": True,
+            "survey_id": survey_id,
+            "tool_name": tool_name,
+            "vds_crs_metadata": None,
+            "survey_metadata": None,
+            "survey_bounds": None
+        }
+
+        # Extract comprehensive metadata if survey_id provided
+        if survey_id and self.vds_client:
+            try:
+                # 1. VDS CRS Metadata (SOURCE OF TRUTH for CRS validation)
+                vds_handle = self.vds_client._get_vds_handle(survey_id)
+                vds_crs_metadata = self.vds_client.extract_crs_from_vds(vds_handle)
+                if vds_crs_metadata:
+                    validation_metadata["vds_crs_metadata"] = vds_crs_metadata
+                    logger.info(f"✅ Extracted VDS CRS metadata for {survey_id}: {vds_crs_metadata.get('crs_id')}")
+
+                # 2. Survey Metadata (for all validations)
+                # Get from result if already present, otherwise extract
+                survey_metadata = result if "dimensions" in result else None
+                if survey_metadata:
+                    validation_metadata["survey_metadata"] = survey_metadata
+
+                    # 3. Survey Bounds (for coordinate validation)
+                    if "dimensions" in survey_metadata:
+                        dims = survey_metadata["dimensions"]
+                        validation_metadata["survey_bounds"] = {
+                            "inline_range": (dims.get("inline_min"), dims.get("inline_max")),
+                            "crossline_range": (dims.get("crossline_min"), dims.get("crossline_max")),
+                            "sample_range": (dims.get("sample_min"), dims.get("sample_max"))
+                        }
+
+            except Exception as e:
+                logger.warning(f"Could not extract complete validation metadata: {e}")
+
+        # Add comprehensive validation metadata to result
+        enriched_result = {
+            **result,
+            "_seismic_cop_validation": {
+                **validation_metadata,
+                "instructions": (
+                    "IMPORTANT: You MUST apply Seismic Cop validation to your response. "
+                    "This includes ALL 9 cop categories:\n"
+                    "1. No Computation Without Data Access\n"
+                    "2. Tool Provenance Verification\n"
+                    "3. Statistical Consistency\n"
+                    "4. Coordinate Bounds Validation\n"
+                    "5. Units Declaration\n"
+                    "6. Cross-Survey Comparison Rules\n"
+                    "7. Amplitude Interpretation\n"
+                    "8. Edge Cases & Error Handling\n"
+                    "9. CRS Validation (using VDS internal metadata as SOURCE OF TRUTH)\n\n"
+                    "Use: validate_response(response_text, vds_crs_metadata=..., survey_metadata=..., tool_outputs=...)\n"
+                    "Include the validation footer showing which cops were applied and their verdicts."
+                )
+            }
+        }
+
+        return enriched_result
+
     def setup_handlers(self):
         """Set up MCP protocol handlers"""
         
@@ -861,6 +946,133 @@ Example:
                         "required": ["survey_id"]
                     }
                 )
+,
+                Tool(
+                    name="compute_global_stats",
+                    description="[COMPUTE AGENT] Sample seismic volume and compute global amplitude statistics. Returns real numerical results - no hallucination. Execution: 5-10 seconds.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "decimation_factor": {
+                                "type": "integer",
+                                "description": "Sample every Nth inline/crossline (default: 10 for speed)",
+                                "default": 10,
+                                "minimum": 1,
+                                "maximum": 50
+                            },
+                            "compute_histogram": {
+                                "type": "boolean",
+                                "description": "Whether to compute amplitude histogram (default: true)",
+                                "default": True
+                            },
+                            "num_bins": {
+                                "type": "integer",
+                                "description": "Number of histogram bins (default: 100)",
+                                "default": 100,
+                                "minimum": 10,
+                                "maximum": 500
+                            }
+                        },
+                        "required": ["survey_id"]
+                    }
+                ),
+                Tool(
+                    name="detect_outliers",
+                    description="[COMPUTE AGENT] Systematically detect amplitude outliers using z-score analysis. Returns outlier coordinates and spatial clusters - no hypothesizing. Execution: 5-15 seconds.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "z_threshold": {
+                                "type": "number",
+                                "description": "Z-score threshold for outlier detection (default: 3.0 = mean ± 3σ)",
+                                "default": 3.0,
+                                "minimum": 1.0,
+                                "maximum": 10.0
+                            },
+                            "decimation_factor": {
+                                "type": "integer",
+                                "description": "Sample every Nth inline/crossline (default: 5)",
+                                "default": 5,
+                                "minimum": 1,
+                                "maximum": 20
+                            },
+                            "max_outliers": {
+                                "type": "integer",
+                                "description": "Maximum number of outliers to report (default: 1000)",
+                                "default": 1000,
+                                "minimum": 10,
+                                "maximum": 10000
+                            },
+                            "cluster_distance": {
+                                "type": "number",
+                                "description": "Distance threshold for spatial clustering in samples (default: 50.0)",
+                                "default": 50.0
+                            },
+                            "min_cluster_size": {
+                                "type": "integer",
+                                "description": "Minimum cluster size to report (default: 5)",
+                                "default": 5,
+                                "minimum": 1
+                            }
+                        },
+                        "required": ["survey_id"]
+                    }
+                ),
+                Tool(
+                    name="extract_window",
+                    description="[COMPUTE AGENT] Extract and analyze a sub-volume with background comparison. Returns window stats + z-score vs global mean - no guessing. Execution: 3-8 seconds.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "survey_id": {
+                                "type": "string",
+                                "description": "Survey identifier"
+                            },
+                            "inline_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "[min_inline, max_inline] in world coordinates",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "crossline_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "[min_crossline, max_crossline] in world coordinates",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "sample_range": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "Optional [min_sample, max_sample] indices (null = full depth)",
+                                "minItems": 2,
+                                "maxItems": 2
+                            },
+                            "compute_background": {
+                                "type": "boolean",
+                                "description": "Whether to compute background statistics for comparison (default: true)",
+                                "default": True
+                            },
+                            "background_decimation": {
+                                "type": "integer",
+                                "description": "Decimation for background sampling (default: 10)",
+                                "default": 10,
+                                "minimum": 1,
+                                "maximum": 50
+                            }
+                        },
+                        "required": ["survey_id", "inline_range", "crossline_range"]
+                    }
+                )
             ]
         
         @self.server.call_tool()
@@ -947,6 +1159,12 @@ Example:
                     result = await self.vds_client.get_survey_metadata(
                         arguments["survey_id"],
                         arguments.get("include_stats", True)
+                    )
+                    # Enrich with COMPLETE validation metadata for ALL cop categories
+                    result = self._enrich_with_validation_metadata(
+                        result,
+                        survey_id=arguments["survey_id"],
+                        tool_name="get_survey_info"
                     )
                 elif name == "search_surveys":
                     search_query = arguments.get("search_query")
@@ -1233,6 +1451,50 @@ Example:
                         arguments.get("session_id")
                     )
 
+                # Compute Agent Tools (Phase 1)
+                elif name == "compute_global_stats":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.global_sampler.sample_volume(
+                        survey_id=arguments["survey_id"],
+                        decimation_factor=arguments.get("decimation_factor", 10),
+                        compute_histogram=arguments.get("compute_histogram", True),
+                        num_bins=arguments.get("num_bins", 100)
+                    )
+
+                elif name == "detect_outliers":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.outlier_detector.detect_outliers(
+                        survey_id=arguments["survey_id"],
+                        z_threshold=arguments.get("z_threshold", 3.0),
+                        decimation_factor=arguments.get("decimation_factor", 5),
+                        max_outliers=arguments.get("max_outliers", 1000),
+                        cluster_distance=arguments.get("cluster_distance", 50.0),
+                        min_cluster_size=arguments.get("min_cluster_size", 5)
+                    )
+
+                elif name == "extract_window":
+                    if not self.agent_manager:
+                        return [TextContent(
+                            type="text",
+                            text=json.dumps({"error": "Agent manager not initialized"})
+                        )]
+                    result = self.agent_manager.window_extractor.extract_window(
+                        survey_id=arguments["survey_id"],
+                        inline_range=tuple(arguments["inline_range"]),
+                        crossline_range=tuple(arguments["crossline_range"]),
+                        sample_range=tuple(arguments["sample_range"]) if arguments.get("sample_range") else None,
+                        compute_background=arguments.get("compute_background", True),
+                        background_decimation=arguments.get("background_decimation", 10)
+                    )
+
                 # Data Integrity / Validation Tools
                 elif name == "validate_extracted_statistics":
                     # Extract the data to validate
@@ -1428,6 +1690,11 @@ Example:
                             required=True
                         )
                     ]
+                ),
+                Prompt(
+                    name="seismic_cop_validation",
+                    description="SYSTEM PROMPT: Automatic Seismic Cop validation for ALL VDS/seismic responses",
+                    arguments=[]
                 )
             ]
         
@@ -1483,7 +1750,95 @@ Please:
 2. Compare key characteristics (acquisition parameters, coverage, data quality)
 3. Identify similarities and differences
 4. Assess compatibility for joint analysis or 4D seismic monitoring"""
-            
+
+            elif name == "seismic_cop_validation":
+                prompt_text = """# AUTOMATIC VALIDATION REQUIREMENT (LAYER 3 - SYSTEM PROMPT)
+
+When responding to queries about VDS/seismic data, you MUST automatically apply Seismic Cop validation.
+
+## MANDATORY VALIDATION WORKFLOW
+
+1. **Generate Your Response Normally**
+   - Interpret tool data and formulate your natural language response
+
+2. **Apply Seismic Cop Validation (REQUIRED)**
+   - Check if tool response includes `_seismic_cop_validation` metadata
+   - If present, you MUST validate your response using:
+
+   ```python
+   from seismic_cop import SeismicCop
+
+   cop = SeismicCop()
+   report = cop.validate_response(
+       response_text=your_response,
+       vds_crs_metadata=tool_result["_seismic_cop_validation"]["vds_crs_metadata"],
+       survey_metadata=tool_result["_seismic_cop_validation"]["survey_metadata"],
+       tool_outputs={tool_name: tool_result}
+   )
+
+   validated_response = report.format_as_footer(your_response)
+   ```
+
+3. **Return Validated Response with Footer**
+   - The validation footer shows which cops were applied and their verdicts
+   - This is NON-NEGOTIABLE for all VDS/seismic responses
+
+## 9 SEISMIC COP CATEGORIES (Intelligently Applied)
+
+The validation system intelligently applies ONLY relevant cops based on your response content:
+
+1. **No Computation Without Data Access** - Applied when: Quantitative claims without tool reference
+2. **Tool Provenance Verification** - Applied when: Statistics or quantitative data mentioned
+3. **Statistical Consistency** - Applied when: Min/Max/Mean/Std values mentioned
+4. **Coordinate Bounds Validation** - Applied when: Inline/crossline/sample coordinates mentioned
+5. **Units Declaration** - Applied when: Numeric values present
+6. **Cross-Survey Comparison Rules** - Applied when: Multiple surveys detected
+7. **Amplitude Interpretation** - Applied when: Amplitude values with physical meaning
+8. **Edge Cases & Error Handling** - Applied when: Error conditions or edge cases mentioned
+9. **CRS Validation** - Applied when: CRS/EPSG/coordinate system mentioned
+
+## SOURCE OF TRUTH: VDS Internal Metadata
+
+- VDS CRS metadata from tool responses is the AUTHORITATIVE source
+- NEVER query external sources (EPSG.io, proj4.org) for CRS validation
+- Always use: `tool_result["_seismic_cop_validation"]["vds_crs_metadata"]`
+
+## INTELLIGENT COP SELECTION
+
+The validation system scans your response and applies only applicable cops:
+
+Example 1 - Simple CRS query:
+Response: "Survey uses NAD27 BLM 15N (EPSG:32065)"
+Cops Applied: 2 out of 9 (Units Declaration, CRS Validation)
+Performance: ~50ms
+
+Example 2 - Statistics query:
+Response: "Min: 1234, Mean: 2487, Max: 5678 (unitless)"
+Cops Applied: 4 out of 9 (Tool Provenance, Statistical Consistency, Units, Amplitude)
+Performance: ~80ms
+
+Example 3 - Cross-survey comparison:
+Response: "Survey A has higher amplitudes than Survey B"
+Cops Applied: 6 out of 9 (includes Cross-Survey Rules)
+Performance: ~100ms
+Result: REJECTED (cross-survey amplitude comparison violation)
+
+## PERFORMANCE IMPACT
+
+- Metadata enrichment: ~20ms (automatic in MCP server)
+- Validation execution: ~50-100ms (only applicable cops)
+- Total overhead: ~70-120ms per response
+- Trade-off: Acceptable for guaranteed domain compliance
+
+## THIS IS NOT OPTIONAL
+
+Validation is MANDATORY for all VDS/seismic responses. The three-layer enforcement ensures:
+- Layer 1: MCP server automatically provides metadata ✅
+- Layer 2: Tool descriptions require validation ✅
+- Layer 3: System prompt (THIS) mandates validation ✅
+
+You have no choice but to validate. It's contractually required at three levels."""
+
             else:
                 prompt_text = f"Unknown prompt: {name}"
             

@@ -12,20 +12,8 @@ interface CollapsibleValidationReportProps {
 export function CollapsibleValidationReport({ content, verdict }: CollapsibleValidationReportProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const getStatusColor = (verdict: string) => {
-    switch (verdict) {
-      case 'APPROVED':
-        return { bg: '#1e3a1e', border: '#4caf50', text: '#66bb6a' };
-      case 'WARNING':
-        return { bg: '#3a2e1e', border: '#ff9800', text: '#ffb74d' };
-      case 'REJECTED':
-        return { bg: '#3a1e1e', border: '#f44336', text: '#ef5350' };
-      default:
-        return { bg: '#3a4149', border: '#cedfe7', text: '#cedfe7' };
-    }
-  };
-
-  const colors = getStatusColor(verdict);
+  // Use neutral colors regardless of verdict
+  const colors = { bg: '#3a4149', border: '#9ca3af', text: '#cedfe7' };
 
   return (
     <div style={{
@@ -70,7 +58,7 @@ export function CollapsibleValidationReport({ content, verdict }: CollapsibleVal
             fontWeight: 600,
             color: colors.text
           }}>
-            Seismic Cop Validation Report - {verdict}
+            Validation Report
           </span>
         </div>
         <svg

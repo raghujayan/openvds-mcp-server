@@ -189,25 +189,41 @@ export default function ChatPage() {
       if (block.type === 'text') {
         const textBlock = block as TextContent;
 
-        // Detect validation report
-        const isValidationReport = textBlock.text.includes('VALIDATION REPORT') ||
-                                   textBlock.text.includes('Seismic Cop');
+        // Check if text contains validation report section
+        const validationMarker = '## Validation Report';
+        const hasValidationReport = textBlock.text.includes(validationMarker);
 
-        if (isValidationReport) {
-          // Extract verdict
+        if (hasValidationReport) {
+          // Split the text into main content and validation report
+          const parts = textBlock.text.split(validationMarker);
+          const mainContent = parts[0];
+          const validationContent = validationMarker + (parts[1] || '');
+
+          // Extract verdict from validation content
           let verdict: 'APPROVED' | 'WARNING' | 'REJECTED' = 'APPROVED';
-          if (textBlock.text.includes('❌ REJECTED') || textBlock.text.includes('REJECTED')) {
+          if (validationContent.includes('❌ **REJECTED**') || validationContent.includes('REJECTED')) {
             verdict = 'REJECTED';
-          } else if (textBlock.text.includes('⚠️ WARNING') || textBlock.text.includes('WARNING')) {
+          } else if (validationContent.includes('⚠️ **WARNING**') || validationContent.includes('WARNING')) {
             verdict = 'WARNING';
           }
 
           return (
-            <CollapsibleValidationReport
-              key={index}
-              content={textBlock.text}
-              verdict={verdict}
-            />
+            <div key={index}>
+              {/* Render main content as regular markdown */}
+              {mainContent && (
+                <div className="prose prose-sm" style={{ maxWidth: 'none', marginLeft: 0, marginRight: 0 }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {mainContent}
+                  </ReactMarkdown>
+                </div>
+              )}
+
+              {/* Render validation report as collapsible */}
+              <CollapsibleValidationReport
+                content={validationContent}
+                verdict={verdict}
+              />
+            </div>
           );
         }
 
