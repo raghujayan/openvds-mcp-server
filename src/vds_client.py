@@ -495,32 +495,58 @@ class VDSClient:
         1. Check cache first (fastest)
         2. Try exact file_path match (most reliable)
         3. Fall back to survey ID match (backwards compatible)
+
+        Supports both dict (Elasticsearch) and list (direct scanning) structures
         """
         # Check cache first
         if survey_id in self.vds_handles:
             return self.vds_handles[survey_id]
 
-        # Strategy 1: Try exact file path match first (for full paths)
-        # This handles cases where survey_id is actually a full file path
-        survey = next((s for s in self.available_surveys if s.get("file_path") == survey_id), None)
+        # Determine if available_surveys is a dict or list
+        is_dict = isinstance(self.available_surveys, dict)
 
-        # Strategy 2: Fall back to ID-based match (for basenames)
-        if not survey:
-            survey = next((s for s in self.available_surveys if s.get("id") == survey_id), None)
+        # Get iterable of survey objects
+        if is_dict:
+            # Elasticsearch mode: available_surveys is {survey_id: {metadata}}
+            # Try direct key lookup first
+            survey = self.available_surveys.get(survey_id)
 
-        # Strategy 3: Try partial path match (handles both /vds-data/ and /Volumes/Hue/ prefixes)
-        if not survey and "/" in survey_id:
-            # Extract basename from provided survey_id
-            basename = survey_id.split("/")[-1].replace(".vds", "")
-            survey = next((s for s in self.available_surveys if s.get("id") == basename), None)
-            if survey:
-                logger.info(f"Resolved survey_id via basename extraction: {survey_id} -> {basename}")
+            if not survey:
+                # Try file_path match
+                survey = next((s for s in self.available_surveys.values() if s.get("file_path") == survey_id), None)
+
+            # Strategy 3: Try partial path match
+            if not survey and "/" in survey_id:
+                basename = survey_id.split("/")[-1].replace(".vds", "")
+                survey = self.available_surveys.get(basename)
+                if survey:
+                    logger.info(f"Resolved survey_id via basename extraction: {survey_id} -> {basename}")
+
+            surveys_iter = self.available_surveys.values()
+        else:
+            # Direct scanning mode: available_surveys is [{id: survey_id, ...}, ...]
+            # Strategy 1: Try exact file_path match first
+            survey = next((s for s in self.available_surveys if s.get("file_path") == survey_id), None)
+
+            # Strategy 2: Fall back to ID-based match
+            if not survey:
+                survey = next((s for s in self.available_surveys if s.get("id") == survey_id), None)
+
+            # Strategy 3: Try partial path match
+            if not survey and "/" in survey_id:
+                basename = survey_id.split("/")[-1].replace(".vds", "")
+                survey = next((s for s in self.available_surveys if s.get("id") == basename), None)
+                if survey:
+                    logger.info(f"Resolved survey_id via basename extraction: {survey_id} -> {basename}")
+
+            surveys_iter = self.available_surveys
 
         if not survey:
             logger.error(f"Survey not found in available_surveys: {survey_id}")
             logger.error(f"  Available survey count: {len(self.available_surveys)}")
             if self.available_surveys:
-                logger.error(f"  Sample survey IDs: {[s.get('id', 'NO_ID') for s in self.available_surveys[:5]]}")
+                sample_ids = [s.get('id', 'NO_ID') for s in list(surveys_iter)[:5]]
+                logger.error(f"  Sample survey IDs: {sample_ids}")
             return None
 
         if survey.get("file_path", "").startswith("demo://"):
